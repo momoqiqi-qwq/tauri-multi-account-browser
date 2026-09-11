@@ -222,7 +222,7 @@ function save() {
             <label class="settings-switch-row"><span><strong>标签页 AI 状态</strong><small>生成中显示动态“...”，完成后显示完成提示</small></span><el-switch v-model="uiForm.showTabAiStatus" /></label>
             <label class="settings-switch-row"><span><strong>显示登录账号</strong><small>右侧账号状态卡显示邮箱/账号名</small></span><el-switch v-model="uiForm.showStatusAccount" /></label>
             <label class="settings-switch-row"><span><strong>显示代理出口</strong><small>右侧状态卡显示代理地区与 IP</small></span><el-switch v-model="uiForm.showStatusProxy" /></label>
-            <label class="settings-switch-row"><span><strong>显示 AI 使用时间</strong><small>右侧状态卡显示最近一次 AI 完成回答的时间</small></span><el-switch v-model="uiForm.showStatusUpdatedTime" /></label>
+            <label class="settings-switch-row"><span><strong>显示 AI 使用时间</strong><small>右侧状态卡显示最近一次 AI 完成回答的时间</small></span><el-switch v-model="uiForm.showAiUsageTime" /></label>
           </div>
         </div>
 

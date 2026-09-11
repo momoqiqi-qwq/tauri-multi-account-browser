@@ -98,7 +98,7 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showTabAiStatus: true,
   showStatusAccount: true,
   showStatusProxy: true,
-  showStatusUpdatedTime: true,
+  showAiUsageTime: true,
   downloadRowsPerPage: 20,
   downloadView: 'grouped',
   tabWidth: 'standard',
@@ -126,6 +126,9 @@ export function normalizeUiPreferences(value: Partial<UiPreferences> | null | un
   const tabSleepMinutesRaw = Number(value?.tabSleepMinutes)
   const tabSleepMinutes = Number.isFinite(tabSleepMinutesRaw) ? Math.min(1440, Math.max(1, Math.round(tabSleepMinutesRaw))) : 15
   const runtimeMode = value?.runtimeMode === 'app-total' ? 'app-total' : 'current-open'
+  // v24 迁移：旧键 showStatusUpdatedTime 已从 UiPreferences 类型里移除，这里单独
+  // cast 出来读一次，避免污染主类型。
+  const legacy = value as (Partial<UiPreferences> & { showStatusUpdatedTime?: unknown }) | undefined
   return {
     theme,
     density,
@@ -141,7 +144,12 @@ export function normalizeUiPreferences(value: Partial<UiPreferences> | null | un
     showTabAiStatus: value?.showTabAiStatus !== false,
     showStatusAccount: value?.showStatusAccount !== false,
     showStatusProxy: value?.showStatusProxy !== false,
-    showStatusUpdatedTime: value?.showStatusUpdatedTime !== false,
+    // v24 之后语义变为「显示 AI 使用时间」。新字段名为 showAiUsageTime；旧字段
+    // showStatusUpdatedTime 仅作读取兼容 —— 旧 localStorage 里存在该键就沿用其值，
+    // 否则取默认 true。新数据持久化时只写新键。
+    //
+    // 旧键已从 UiPreferences 类型里移除（避免误用），迁移这里单独 cast 一下读出来。
+    showAiUsageTime: legacy?.showAiUsageTime ?? (legacy?.showStatusUpdatedTime !== false),
     downloadRowsPerPage,
     downloadView,
     tabWidth,

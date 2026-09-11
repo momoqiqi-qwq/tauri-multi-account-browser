@@ -252,8 +252,8 @@ export interface UiPreferences {
   showStatusAccount: boolean
   /** 账号状态卡显示代理出口 */
   showStatusProxy: boolean
-  /** 账号状态卡显示状态更新时间 */
-  showStatusUpdatedTime: boolean
+  /** 账号状态卡显示 AI 使用时间 */
+  showAiUsageTime: boolean
   downloadRowsPerPage: number
   downloadView: 'grouped' | 'flat'
   /** 标签页宽度 */

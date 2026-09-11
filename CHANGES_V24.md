@@ -60,6 +60,20 @@ if status.answer_ready {
 - 描述：`右侧状态卡显示最近一次状态抓取时间` → `右侧状态卡显示最近一次 AI 完成回答的时间`
 - 底层字段名仍是 `showStatusUpdatedTime`（localStorage 兼容）；想彻底改名以后再说。
 
+### 补记：偏好字段彻底改名
+
+把 `showStatusUpdatedTime` → `showAiUsageTime`，连带 Vue prop 也同步：
+
+- `src/types.ts` 的 `UiPreferences` 接口字段。
+- `src/lib/uiPreferences.ts` 默认值 + 归一化函数（`legacy` 变量单独 cast 读旧键）。
+- `src/components/StatusSidebar.vue` 的 prop 名 `showUpdatedTime` → `showAiUsageTime`。
+- `src/App.vue` 传给 `StatusSidebar` 的属性 `:show-ai-usage-time`。
+- `src/components/AppPreferencesDialog.vue` 表单字段。
+
+迁移策略：归一化时优先读新键 `showAiUsageTime`；旧键 `showStatusUpdatedTime` 仅
+作读取兼容 —— 旧 localStorage 里存在该键就沿用其值，否则取默认 `true`。新数据
+持久化时只写新键，旧键自然过期。
+
 ## 4. 自动刷新翻转
 
 `src/App.vue::startAutoRefresh` 旧逻辑（"AI 回答时暂停"）：
