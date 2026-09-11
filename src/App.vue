@@ -92,6 +92,7 @@ const {
   editingProfile,
   editorVisible,
   profileSaving,
+  batchBusy,
 } = accounts
 
 let unlistenNavigation: UnlistenFn | undefined
@@ -345,6 +346,7 @@ onBeforeUnmount(() => {
       :open-tabs="openTabs"
       :collapsed="profileSidebarCollapsed"
       :all-tags="allTags"
+      :batch-busy="batchBusy"
       v-model:search="searchQuery"
       v-model:view-mode="viewMode"
       v-model:active-tag="activeTag"
@@ -360,7 +362,7 @@ onBeforeUnmount(() => {
       @clone="accounts.cloneProfile"
       @test-proxy="testProxy"
       @toggle-favorite="accounts.toggleFavorite"
-      @batch="accounts.updateBatch"
+      @batch="(ids, patch) => accounts.updateBatch(ids, patch, `已修改 ${ids.length} 个账号`)"
     />
     <StatusSidebar
       :profiles="filteredProfiles"

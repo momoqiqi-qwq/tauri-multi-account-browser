@@ -19,18 +19,21 @@ const emit = defineEmits<{
 /** 与 Rust 侧 MAX_BULK_PROFILES 保持一致；超了后端会直接拒绝。 */
 const BATCH_LIMIT = 200
 
-async function apply(patch: ProfileBatchPatch, okMessage: string) {
+/**
+ * 只负责发起。**不要在这里弹成功提示** —— emit 是同步的，真正的写入在父组件里
+ * 是异步的，失败了会先看到"已修改"再看到报错。成功/失败提示统一由父组件负责。
+ */
+function apply(patch: ProfileBatchPatch) {
   if (!props.selected.length) {
     ElMessage.warning('请先选择账号')
     return
   }
   emit('apply', patch)
-  ElMessage.success(okMessage)
 }
 
 async function setUrlMode(mode: 'inherit' | 'custom') {
   if (mode === 'inherit') {
-    await apply({ url_mode: 'inherit' }, `已把 ${props.selected.length} 个账号改为继承全局主页`)
+    await apply({ url_mode: 'inherit' })
     return
   }
   const { value } = await ElMessageBox.prompt(
@@ -39,7 +42,7 @@ async function setUrlMode(mode: 'inherit' | 'custom') {
     { inputPlaceholder: 'https://example.com/', inputPattern: /^https?:\/\/\S+$/, inputErrorMessage: '请填写 http(s) 开头的完整网址' },
   ).catch(() => ({ value: undefined as string | undefined }))
   if (!value) return
-  await apply({ url_mode: 'custom', default_url: value.trim() }, `已把 ${props.selected.length} 个账号改为独立主页`)
+  await apply({ url_mode: 'custom', default_url: value.trim() })
 }
 
 async function addTags() {
@@ -54,7 +57,7 @@ async function addTags() {
     ElMessage.warning('没有填写标签')
     return
   }
-  await apply({ tags_add: tags }, `已给 ${props.selected.length} 个账号添加标签`)
+  await apply({ tags_add: tags })
 }
 
 async function removeTags() {
@@ -69,7 +72,7 @@ async function removeTags() {
     ElMessage.warning('没有填写标签')
     return
   }
-  await apply({ tags_remove: tags }, `已移除 ${props.selected.length} 个账号上的指定标签`)
+  await apply({ tags_remove: tags })
 }
 
 async function moveToGroup() {
@@ -79,13 +82,13 @@ async function moveToGroup() {
     { inputPlaceholder: '分组名称' },
   ).catch(() => ({ value: undefined as string | undefined }))
   if (value === undefined) return
-  await apply({ group: value.trim() }, `已移动 ${props.selected.length} 个账号`)
+  await apply({ group: value.trim() })
 }
 
 const quickTag = ref('')
 async function applyQuickTag(tag: string) {
   if (!tag) return
-  await apply({ tags_add: [tag] }, `已给 ${props.selected.length} 个账号打上「${tag}」`)
+  await apply({ tags_add: [tag] })
   quickTag.value = ''
 }
 </script>
@@ -100,8 +103,8 @@ async function applyQuickTag(tag: string) {
     <div class="batch-actions">
       <el-button size="small" :disabled="busy" @click="setUrlMode('inherit')">主页改继承全局</el-button>
       <el-button size="small" :disabled="busy" @click="setUrlMode('custom')">主页改独立网址…</el-button>
-      <el-button size="small" :disabled="busy" @click="apply({ favorite: true }, `已收藏 ${selected.length} 个账号`)">收藏</el-button>
-      <el-button size="small" :disabled="busy" @click="apply({ favorite: false }, `已取消收藏 ${selected.length} 个账号`)">取消收藏</el-button>
+      <el-button size="small" :disabled="busy" @click="apply({ favorite: true })">收藏</el-button>
+      <el-button size="small" :disabled="busy" @click="apply({ favorite: false })">取消收藏</el-button>
       <el-button size="small" :disabled="busy" @click="addTags">加标签…</el-button>
       <el-button size="small" :disabled="busy" @click="removeTags">移除标签…</el-button>
       <el-button size="small" :disabled="busy" @click="moveToGroup">移动分组…</el-button>
@@ -109,7 +112,7 @@ async function applyQuickTag(tag: string) {
         size="small"
         type="danger"
         :disabled="busy"
-        @click="apply({ tags_set: [] }, `已清空 ${selected.length} 个账号的标签`)"
+        @click="apply({ tags_set: [] })"
       >
         清空标签
       </el-button>

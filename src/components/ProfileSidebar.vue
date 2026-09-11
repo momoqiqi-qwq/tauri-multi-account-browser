@@ -36,6 +36,8 @@ const props = defineProps<{
   activeTag: string | null
   /** 所有账号上出现过的标签，用于标签筛选条 */
   allTags: string[]
+  /** 批量修改进行中（由父组件的 useProfiles 提供） */
+  batchBusy: boolean
 }>()
 
 const emit = defineEmits<{
@@ -74,7 +76,6 @@ function toggleTag(tag: string) {
 // ---- 批量选择 ----
 const selectMode = ref(false)
 const selected = ref<string[]>([])
-const batchBusy = ref(false)
 
 function toggleSelectMode() {
   selectMode.value = !selectMode.value
@@ -93,13 +94,11 @@ function selectVisible() {
 }
 function applyBatch(patch: ProfileBatchPatch) {
   if (!selected.value.length) return
-  batchBusy.value = true
   const ids = [...selected.value]
   // 清空选择但保留选择模式，方便连着做下一个批量操作。
   // 失败时父组件会提示，Rust 侧是原子提交，不存在改了一半的情况。
   selected.value = []
   emit('batch', ids, patch)
-  batchBusy.value = false
 }
 
 let releaseMenu: (() => void) | null = null

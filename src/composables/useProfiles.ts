@@ -50,8 +50,10 @@ export interface ProfilesApi {
   openEditDialog(profile: Profile): void
   createProfile(settings: ProfileIsolationSettings): Promise<void>
   updateProfile(id: string, settings: ProfileIsolationSettings): Promise<void>
+  /** 批量修改进行中 */
+  batchBusy: Ref<boolean>
   /** 批量修改。Rust 侧先全量校验再一次落盘，失败时整批不改。 */
-  updateBatch(ids: string[], patch: ProfileBatchPatch): Promise<void>
+  updateBatch(ids: string[], patch: ProfileBatchPatch, successMessage?: string): Promise<void>
   /** 切换单个账号的收藏状态（内部走批量命令，保证与批量操作同一套校验） */
   toggleFavorite(profile: Profile): Promise<void>
   deleteProfile(profile: Profile): Promise<void>
@@ -72,6 +74,8 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
   const editingProfile = ref<Profile | null>(null)
   const editorVisible = ref(false)
   const profileSaving = ref(false)
+  /** 批量修改进行中；侧边栏用它禁用批量操作条 */
+  const batchBusy = ref(false)
 
   const filteredProfiles = computed(() => {
     const query = searchQuery.value.trim().toLowerCase()
@@ -107,8 +111,9 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
       const recent = new Set(recentProfiles.value.map((p) => p.id))
       list = list.filter((p) => recent.has(p.id))
     }
-    if (activeTag.value) {
-      const tag = activeTag.value
+    // 标签被删光后 activeTag 会残留，若不过滤掉就会永久停在空列表。
+    const tag = activeTag.value
+    if (tag && allTags.value.includes(tag)) {
       list = list.filter((p) => (p.tags ?? []).includes(tag))
     }
     return list
@@ -229,17 +234,21 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
     }
   }
 
-  async function updateBatch(ids: string[], patch: ProfileBatchPatch) {
+  async function updateBatch(ids: string[], patch: ProfileBatchPatch, successMessage?: string) {
     if (!ids.length) {
       ElMessage.warning('请先选择账号')
       return
     }
+    batchBusy.value = true
     try {
       await invoke<Profile[]>('update_profile_batch', { ids, patch })
       await loadProfiles()
+      if (successMessage) ElMessage.success(successMessage)
     } catch (error) {
       // Rust 侧是原子提交，失败时一个账号都没改，所以这里只需提示，不需要回滚前端。
       ElMessage.error(`批量修改失败：${String(error)}`)
+    } finally {
+      batchBusy.value = false
     }
   }
 
@@ -344,6 +353,7 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
     editingProfile,
     editorVisible,
     profileSaving,
+    batchBusy,
     loadProfiles,
     loadStatuses,
     refreshStatuses,
