@@ -142,10 +142,13 @@ function startAutoRefresh() {
   const seconds = uiPreferences.value.autoRefreshSeconds
   if (!Number.isFinite(seconds) || seconds <= 0) return
   autoRefreshTimer = setInterval(() => {
-    if (!activeId.value || isSuppressed()) return
-    if (uiPreferences.value.pauseAutoRefreshWhileGenerating && statuses.value[activeId.value]?.answer_generating) return
+    const id = activeId.value
+    if (!id || isSuppressed()) return
+    // 只在 AI 正在回答时才刷新 —— 平时刷新是浪费，也要避免打断任务。
+    // 见 v24：旧行为是「回答时暂停」，现在反过来了；想完全不刷就把秒数设为 0。
+    if (!statuses.value[id]?.answer_generating) return
     const action = uiPreferences.value.restorePositionAfterRefresh ? 'reload_restore' : 'reload'
-    void invoke('browser_action', { id: activeId.value, action }).catch(() => undefined)
+    void invoke('browser_action', { id, action }).catch(() => undefined)
   }, Math.max(1, seconds) * 1000)
 }
 

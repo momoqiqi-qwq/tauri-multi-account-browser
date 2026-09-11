@@ -110,15 +110,17 @@ pub(crate) fn save_profile_status(app: &AppHandle, id: &str, mut status: Profile
                 status.proxy_isp = previous.proxy_isp.clone();
                 status.proxy_tested_at = previous.proxy_tested_at.clone();
             }
-            if status.answer_ready {
-                status.answer_finished_at = previous
-                    .answer_finished_at
-                    .clone()
-                    .or_else(|| Some(Utc::now().to_rfc3339()));
+            // answer_finished_at 现在是「最近一次 AI 完成回答的时间」，要持久保留，
+            // 用于侧边栏显示上次 AI 使用时间。仅在 answer_ready 从 false 翻到 true
+            // （即真正的「刚刚答完」瞬间）时才覆盖；其它情况（仍在生成 / 反复扫描）
+            // 都沿用上一次的值，避免时间戳随每次扫描往前漂。
+            if status.answer_ready && !previous.answer_ready {
+                status.answer_finished_at = Some(Utc::now().to_rfc3339());
             } else {
-                status.answer_finished_at = None;
+                status.answer_finished_at = previous.answer_finished_at.clone();
             }
-        } else if status.answer_ready && status.answer_finished_at.is_none() {
+        } else if status.answer_ready {
+            // 首次上报且已经 ready：当作刚答完，记下时间。
             status.answer_finished_at = Some(Utc::now().to_rfc3339());
         }
 
@@ -137,8 +139,11 @@ pub(crate) fn save_profile_status(app: &AppHandle, id: &str, mut status: Profile
     );
 }
 
-/// 用户切回账号即视为已查看“回答完成”提醒。页面端也同步清除，
+/// 用户切回账号即视为已查看"回答完成"提醒。页面端也同步清除，
 /// 防止下一次状态上报把提醒重新置回。
+///
+/// 注意：只清 `answer_ready`（未读提醒），**保留** `answer_finished_at`——
+/// 它现在表示「最近一次 AI 完成回答的时间」，要持久用于侧边栏展示。
 pub(crate) fn clear_profile_answer_ready(app: &AppHandle, id: &str) {
     if let Ok(store) = app.store(STORE_FILE) {
         let mut map: HashMap<String, ProfileStatus> = store
@@ -146,9 +151,8 @@ pub(crate) fn clear_profile_answer_ready(app: &AppHandle, id: &str) {
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
         if let Some(status) = map.get_mut(id) {
-            if status.answer_ready || status.answer_finished_at.is_some() {
+            if status.answer_ready {
                 status.answer_ready = false;
-                status.answer_finished_at = None;
                 let cloned = status.clone();
                 if let Ok(value) = serde_json::to_value(&map) {
                     store.set(STATUS_KEY, value);

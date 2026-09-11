@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
           <div v-if="showProxy && row.proxyLine" class="status-proxy" :title="`出口 ISP：${row.proxyIsp || '未知'}`">
             <span class="proxy-text">{{ row.proxyLine }}</span>
           </div>
-          <small v-if="showUpdatedTime && row.status?.updated_at" class="status-time">{{ updatedAtLabel(row.status.updated_at) }} 更新</small>
+          <small v-if="showUpdatedTime && row.status?.answer_finished_at" class="status-time">{{ updatedAtLabel(row.status.answer_finished_at) }} AI使用</small>
         </div>
 
         <div v-if="rows.length === 0" class="status-empty">还没有账号</div>

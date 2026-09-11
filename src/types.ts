@@ -246,8 +246,6 @@ export interface UiPreferences {
   customToolbarButtons: CustomToolbarButton[]
   /** 刷新后恢复刷新前的滚动/锚点位置 */
   restorePositionAfterRefresh: boolean
-  /** AI 正在生成时暂停自动刷新，避免打断回答 */
-  pauseAutoRefreshWhileGenerating: boolean
   /** 标签页显示 AI 生成/完成状态 */
   showTabAiStatus: boolean
   /** 账号状态卡显示登录账号 */

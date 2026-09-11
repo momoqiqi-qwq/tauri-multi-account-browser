@@ -203,7 +203,7 @@ function save() {
           <label class="settings-field">
             <span>自动刷新</span>
             <el-input-number v-model="uiForm.autoRefreshSeconds" :min="0" :max="86400" :step="1" controls-position="right" />
-            <small>单位：秒。设置为 0 表示关闭；仅自动刷新当前正在查看的账号标签页。</small>
+            <small>单位：秒。设置为 0 表示关闭；仅自动刷新当前正在查看的账号标签页，且只在 AI 正在生成回答时才刷。</small>
           </label>
           <label class="settings-switch-row settings-inline-switch">
             <span>
@@ -211,13 +211,6 @@ function save() {
               <small>刷新前记住滚动位置和 URL 锚点，页面加载后自动回到原位置。</small>
             </span>
             <el-switch v-model="uiForm.restorePositionAfterRefresh" />
-          </label>
-          <label class="settings-switch-row settings-inline-switch">
-            <span>
-              <strong>AI 回答时暂停自动刷新</strong>
-              <small>检测到当前账号正在生成回答时跳过自动刷新，避免打断任务。</small>
-            </span>
-            <el-switch v-model="uiForm.pauseAutoRefreshWhileGenerating" />
           </label>
         </div>
 
@@ -229,7 +222,7 @@ function save() {
             <label class="settings-switch-row"><span><strong>标签页 AI 状态</strong><small>生成中显示动态“...”，完成后显示完成提示</small></span><el-switch v-model="uiForm.showTabAiStatus" /></label>
             <label class="settings-switch-row"><span><strong>显示登录账号</strong><small>右侧账号状态卡显示邮箱/账号名</small></span><el-switch v-model="uiForm.showStatusAccount" /></label>
             <label class="settings-switch-row"><span><strong>显示代理出口</strong><small>右侧状态卡显示代理地区与 IP</small></span><el-switch v-model="uiForm.showStatusProxy" /></label>
-            <label class="settings-switch-row"><span><strong>显示更新时间</strong><small>右侧状态卡显示最近一次状态抓取时间</small></span><el-switch v-model="uiForm.showStatusUpdatedTime" /></label>
+            <label class="settings-switch-row"><span><strong>显示 AI 使用时间</strong><small>右侧状态卡显示最近一次 AI 完成回答的时间</small></span><el-switch v-model="uiForm.showStatusUpdatedTime" /></label>
           </div>
         </div>
 
