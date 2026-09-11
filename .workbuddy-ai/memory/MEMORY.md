@@ -13,6 +13,23 @@
 - URL 规则唯一真值在 Rust：`effective_profile_home_url()` / `normalized_global_default_url()`。前端 `src/lib/profileUrl.ts` 只做即时反馈。
 - `Profile.url_mode`: `inherit` 跟随全局默认主页 / `custom` 独立网址。旧账号 serde 默认 `custom`。
 
+### 前端分层（v20 起）
+`src/App.vue` 只做宿主编排（弹层可见性、地址栏/工具栏动作、Tauri 事件分发、布局同步），
+业务逻辑在 `src/composables/`：
+- `useSettings()` — 全局设置 + 下载历史，**无依赖**
+- `useTabs(deps)` — 标签生命周期（开关/固定/排序/计时/休眠/会话恢复）
+- `useProfiles({ profiles, tabs })` — 账号 CRUD、搜索过滤、分组、运行状态缓存
+
+三条硬约定：
+1. **composable 之间不互相 import**，一律参数注入（`getBounds` / `globalDefaultUrl` /
+   `onActivateError` / `tabs`）。这样可单测，也不会有循环依赖。
+2. **`profiles` ref 由 App.vue 持有**并传给 useTabs / useProfiles ——
+   两边一个写一个读，各自持有就会成环。别为了"整洁"把它挪进某个 composable。
+3. **`<script setup>` 只对顶层 ref 自动解包**。`const tabs = useTabs()` 之后在模板里写
+   `v-model="tabs.currentUrl"` 拿到的是 Ref 对象，响应式会坏。
+   必须"对象取函数、顶层解构取 ref"：
+   `const { openTabs, activeId, currentUrl } = tabs`，模板里 `@activate="tabs.activate"`。
+
 ## 关键坑（务必记住）
 
 ### 1. Rust `set_app_settings` 是整体覆盖写盘
