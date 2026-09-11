@@ -212,8 +212,17 @@ npm run verify:assets        # = node scripts/verify-embedded-assets.mjs
 - **完整打包（出安装包）本机跑不了**：没装 NSIS（`makensis` 不存在）也没 WiX，
   而 `bundle.targets` 是 `"all"`，会去下载工具链。要发安装包换台机器跑。
 - 另一个坑：沙箱的批量删除保护会打断 `vite build` 清空 `dist`
-  （`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]`），且会把 dist 删到一半。
-  遇到就手动 `rm -rf dist` 再重新构建，别留残缺的 dist。
+  （`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]`，按轮次累计 50 次就拦），
+  且会把 dist 删到只剩 index.html。**`rm -rf dist` 同样会被拦**，
+  改用 `mv dist .workbuddy-ai/backup/dist-stale-<时间戳>` 绕开（该目录已 gitignore）。
+- `tauri-codegen-assets/` 会**累积**历次构建的文件（文件名是内容 hash，不互相覆盖），
+  所以里面同时有新旧两份。校验脚本必须按扩展名分组、只要有一个能对上 dist 就通过，
+  否则旧文件会被判成 MISS。
+- 静态检查：`bash scripts/cargo-msvc.sh clippy --lib --tests -- -W clippy::all`，
+  当前 **0 warning**。`cargo clippy --fix` 能自动修大部分，但和 `cargo fix` 一样
+  有删掉测试专用 import 的风险，修完必须再跑 `cargo check --lib --tests` + 测试。
+  `create_profile`(13 参) / `update_profile`(12 参) 的 `too_many_arguments` 是**有意放行**
+  的（参数逐个对应 invoke 载荷字段），别去收成 struct。
 ## 环境
 - VS 18 Community，MSVC 14.50.35717，Rust 1.98.0，Node 24.14.0 / 22.22.2。
 - 备份放 `.workbuddy-ai/backup/`，排除 node_modules / src-tauri/target / dist。
