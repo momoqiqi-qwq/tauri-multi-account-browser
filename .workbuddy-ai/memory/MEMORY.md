@@ -167,6 +167,10 @@ zip 里**不含** `scripts/cargo-msvc.sh`、`src-tauri/tests/`、`CHANGES_V15+`�
 - `normalize_tags()` 在 validation.rs：trim / 丢空 / **大小写不敏感**去重（保留原样大小写）/
   24 字符 / 12 个上限 / 保序。任何写 tags 的路径都要过它。
 - 批量改动走 `update_profile_batch(ids, patch)`（原子提交），**不要循环调 update_profile**。
+- **`normalized_global_default_url()` 很贵**：内部会把 `AppSettings` 整份反序列化一遍。
+  它曾被放在 `build_profile` 和批量循环里，N 个账号就是 N 次，而这些命令跑在主线程。
+  现在拆出 `build_profile_with_global(draft, order, &global)`，批量路径在**循环外算一次**。
+  新增类似的批量/循环逻辑时沿用这个模式。
 - **CSV 列只允许在末尾追加**：解析靠位置，缺 trailing 列由 serde default 兜底，
   这样旧导出文件仍可导入。tags 列用 `|` 分隔（标签可能含逗号）。
 - 测试基建坑：`save_profiles` 是**整表覆盖**，`seed_profile()` 循环调用会互相抹掉，
