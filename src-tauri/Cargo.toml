@@ -23,6 +23,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 base64 = "0.22"
+tauri-plugin-dialog = "2.7.3"
+csv = "1.4.0"
 
 [dev-dependencies]
 # 用于在单元测试里构造带 store 插件的 mock App，验证 schema 迁移行为。
