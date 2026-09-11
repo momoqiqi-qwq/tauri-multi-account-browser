@@ -134,4 +134,11 @@ zip 里**不含** `scripts/cargo-msvc.sh`、`src-tauri/tests/`、`CHANGES_V15+`�
 - 当前版本 0.6.0（v14）。v15 模板迁入 Rust store、v16 批量创建原子提交、
   v17 schema_version 显式迁移、v18 导入导出、v19 拆分 lib.rs，
   均未 bump 版本号，变更见 `CHANGES_V15.md` ~ `CHANGES_V19.md`。
-- git 仓库已建立（分支 `refactor/split-lib`），改代码前建议先提交一个基线。
+- git 仓库已建立，改代码前建议先提交一个基线。当前：`master` = v18，
+  `v19-split-lib` = v19（拆分 lib.rs）。
+- **坑：这个环境里带斜杠的分支名（`refactor/xxx`）创建不了**。
+  `git update-ref refs/heads/foo/bar` 会返回成功，但 `.git/refs/heads/foo/` 子目录
+  实际没被创建，`git show-ref` 里查无此分支，HEAD 卡在"未出生"状态，
+  随后的 `git commit` 会变成**无父的根提交**。分支名一律用不带斜杠的形式。
+- 提交信息用 `git commit -F "$(cygpath -w /tmp/msg.txt)"`：git for Windows 不认 `/tmp/xxx`
+  这种 POSIX 路径。
