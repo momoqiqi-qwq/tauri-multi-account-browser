@@ -1,6 +1,11 @@
 # Tauri 2 多账户浏览器容器 MVP
 
-> 当前源码版本：**0.5.1 / v13**。本轮重点修复空网址账号无法进入，并统一账号主页、URL 修复、保存失败恢复与分组拖拽一致性。详见 `CHANGES_V13.md`。
+> 当前源码版本：**0.7.0 / v23**。
+>
+> 0.6.0（v14）之后又做了一轮工程化收尾：模板迁入 Rust store、原子批量创建、schema 显式迁移、
+> 原生导入导出、`lib.rs` 按领域拆成 9 个模块、`App.vue` 拆成 3 个 composable、
+> 诊断中心增强、账号标签/收藏/最近使用/批量编辑，最后打通并验证了真正的发布构建。
+> 变更见 `CHANGES_V15.md` ~ `CHANGES_V23.md`。
 
 ## v0.2.0 / 优化版新增
 
@@ -85,17 +90,28 @@ tauri-multi-account-browser/
 ├─ vite.config.ts
 ├─ tsconfig.json
 ├─ index.html
+├─ scripts/
+│  ├─ cargo-msvc.sh                 # MSVC 环境下跑 cargo（绕 Git Bash 的 link.exe 遮蔽）
+│  ├─ cargo-test.sh                 # 跑 cargo test（注入 Common-Controls v6 manifest）
+│  ├─ tauri-msvc.sh                 # 跑 npm run tauri（本机发布构建的入口）
+│  └─ verify-embedded-assets.mjs    # 校验前端资源是否真的嵌进了 exe
 ├─ src/
 │  ├─ main.ts
-│  ├─ App.vue
+│  ├─ App.vue                       # 只做宿主编排（弹层/地址栏/事件分发/布局）
 │  ├─ style.css
 │  ├─ types.ts
+│  ├─ composables/
+│  │  ├─ useSettings.ts             # 全局设置 + 下载历史
+│  │  ├─ useTabs.ts                 # 标签生命周期
+│  │  └─ useProfiles.ts             # 账号 CRUD / 标签 / 收藏 / 批量
 │  └─ components/
 │     ├─ ProfileSidebar.vue
+│     ├─ ProfileBatchBar.vue
 │     ├─ TabStrip.vue
 │     ├─ AddressBar.vue
 │     ├─ BrowserViewport.vue
-│     └─ ProfileSettingsDialog.vue
+│     ├─ ProfileSettingsDialog.vue
+│     └─ ProfileDiagnosisDialog.vue
 └─ src-tauri/
    ├─ Cargo.toml
    ├─ build.rs
@@ -103,7 +119,9 @@ tauri-multi-account-browser/
    ├─ capabilities/default.json
    └─ src/
       ├─ main.rs
-      └─ lib.rs
+      ├─ lib.rs                     # 常量 + 全部类型定义 + run() + 单元测试
+      └─ {webviews,downloads,profiles,validation,import_export,
+          status,store,diagnostics,settings}.rs
 ```
 
 ## 4. 运行
@@ -123,9 +141,50 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
+### 4.1 Windows + Git Bash 下的注意事项
+
+Git Bash 的 `/usr/bin/link.exe`（GNU coreutils）会遮蔽 MSVC 的链接器，导致
+`link.exe returned an unexpected error` / `LNK1181`。本项目已备好脚本：
+
+```bash
+bash scripts/tauri-msvc.sh build --no-bundle   # 发布构建，只出 exe
+bash scripts/tauri-msvc.sh build               # 发布构建 + 安装包（需 NSIS/WiX）
+bash scripts/tauri-msvc.sh dev                 # 开发模式
+bash scripts/cargo-msvc.sh build --release     # 只跑 cargo
+bash scripts/cargo-test.sh --lib               # 单元测试（42 个）
+```
+
+### 4.2 发布前必须验证：前端资源真的打进去了
+
+**编译通过 ≠ 二进制可用。** `tauri` 2.x 里 `is_dev() = !cfg!(feature = "custom-protocol")`；
+`src-tauri/Cargo.toml` 缺这个 feature 时，前端资源不会嵌入，应用会去连 `devUrl`
+（`http://localhost:1420`）表现为**白屏**。所以：
+
+- 发布一律走 `npm run tauri:build` / `scripts/tauri-msvc.sh`（CLI 会自动带 feature），
+  **不要**用裸 `cargo build --release`；
+- 跑一次校验（会解压 `tauri-codegen-assets/` 与 `dist/` 逐字节比对）：
+
+```bash
+npm run verify:assets
+```
+
+> 别用"在 exe 里 grep 前端字符串"来验证 —— tauri 的 `compression` 是默认 feature，
+> 资源是 brotli 压缩后嵌入的，明文一定搜不到，会误判。
+
 ## 5. 核心隔离代码
 
-核心实现在 `src-tauri/src/lib.rs`。
+核心实现已按领域拆到 `src-tauri/src/` 下的 9 个模块（类型定义仍集中在 `lib.rs`）：
+
+| 模块 | 职责 |
+| --- | --- |
+| `webviews.rs` | WebView 创建/布局/注入脚本，**以及 URL 规则唯一真值** |
+| `profiles.rs` | 账号 CRUD、激活、清除数据、批量修改 |
+| `validation.rs` | 昵称/URL/代理/标签的校验与规范化 |
+| `import_export.rs` | JSON / CSV 导入导出 |
+| `store.rs` | `profiles.json` 读写与 schema 迁移 |
+| `diagnostics.rs` | 启动诊断：错误码分类、WebView2 检测、目录占用、代理延迟 |
+| `downloads.rs` | 下载拦截与历史 |
+| `settings.rs`、`status.rs` | 全局设置、状态回传 |
 
 Windows：
 
@@ -331,6 +390,20 @@ async fn login_with_google(profile_id: String) {
 
 需求本身偏桌面管理工具：侧栏、卡片、弹窗、下拉菜单、表单较多。Vue 3 + Element Plus 能用较少代码完成 MVP，同时和 Tauri 的 `invoke/event` 模型配合直接。浏览器内容本身不是 Vue iframe，而是 Rust 创建的原生 WebView，因此前端框架不会影响账号隔离强度。
 
-## v14 / 0.6.0
+## 版本历史（摘要）
 
-新增全局默认账号网址与“继承全局 / 单独覆盖”主页模式；加入账号模板、批量创建、JSON 导入导出和账号启动诊断中心。账号打开失败时可直接清除错误 last_url、回主页、切换全局主页或禁用代理后重试。详见 `CHANGES_V14.md`。
+| 版本 | 轮次 | 主要内容 |
+| --- | --- | --- |
+| 0.5.1 | v13 | 修复空网址账号、统一主页与 URL 修复、分组拖拽一致性 |
+| 0.6.0 | v14 | 全局默认网址 +「继承/覆盖」主页模式、账号模板、批量创建、JSON 导入导出、启动诊断中心 |
+| — | v15 | 账号模板从 localStorage 迁入 Rust store |
+| — | v16 | 批量创建改为原子提交（整批校验通过才落盘） |
+| — | v17 | `schema_version` + 显式迁移脚本 |
+| — | v18 | 导入导出改为原生文件选择器，支持 CSV、冲突策略、逐行错误报告 |
+| — | v19 | `src-tauri/src/lib.rs`（4326 行）拆成 9 个领域模块 |
+| — | v20 | `App.vue`（817 行）拆成 `useProfiles` / `useTabs` / `useSettings` |
+| — | v21 | 诊断中心：错误码分类与修复建议、WebView2 运行时检测、数据目录占用、代理连通性延迟 |
+| 0.7.0 | v22 | 账号标签 / 收藏 / 最近使用 / 批量编辑（schema v2） |
+| 0.7.0 | v23 | 打通发布构建路径（`scripts/tauri-msvc.sh`），修正资源嵌入校验方式 |
+
+每一轮的取舍与坑位都写在对应的 `CHANGES_V*.md` 里，改代码前值得先扫一眼。
