@@ -188,18 +188,38 @@ custom-protocol = ["tauri/custom-protocol"]
 
 **怎么验证资源真的打进去了**（编译通过 ≠ 二进制可用）：
 ```
-grep -ao "index-[A-Za-z0-9_-]*\.\(js\|css\)" src-tauri/target/release/*.exe
+npm run verify:assets        # = node scripts/verify-embedded-assets.mjs
 ```
-能列出 dist 里的文件名才算成功。注意只改前端时 cargo 不会重嵌资源，需先
-`touch src-tauri/build.rs`。
+⚠️ **不要再用"在 exe 里 grep 前端字符串"的办法**：tauri 的 `compression` 是**默认 feature**
+（`tauri` 的 `default = ["wry","compression","common-controls-v6",...]`），资源是
+**brotli 压缩后**嵌入的，明文一定搜不到，会误判成"没打包"。
+正确做法：tauri-build 会把嵌入用的字节写到
+`src-tauri/target/release/build/tauri-multi-account-browser-<hash>/out/tauri-codegen-assets/`，
+`verify-embedded-assets.mjs` 会找到它、brotli 解压、与 `dist/` 产物逐字节比对。
+**这个目录只有开了 custom-protocol 才会生成** —— 脚本据此能直接判定发布构建没开 feature。
+（exe 体积也是个旁证：raw dist ~1.53MB，压完只多出约 370KB。）
+注意只改前端时 cargo 不会重嵌资源，需先 `touch src-tauri/build.rs`（或重新跑 CLI 构建）。
+
+### 15. 发布构建要走的命令（v23 起）
+- **`bash scripts/tauri-msvc.sh build --no-bundle`** —— 本机唯一验证可用的发布命令。
+  不要直接 `npm run tauri build`，原因：
+  1. 本机 PATH 里没有 cargo（平时都靠 `cargo-msvc.sh` 设 `CARGO_BIN`），Tauri CLI 一启动
+     就要 `cargo metadata`，会报 `program not found`；
+  2. 也不能 `source scripts/cargo-msvc.sh` —— 它为了绕 `link.exe` 把 PATH 压成
+     `"MSVC;SDK;/usr/bin;/bin"`，node/npm 会一起消失。
+  脚本把 MSVC bin（须在 `/usr/bin` 之前）+ SDK bin（`mt.exe`）+ `$HOME/.cargo/bin` +
+  原 PATH 拼起来，配好 INCLUDE/LIB/LIBPATH 后 `exec npm run tauri -- "$@"`。
+- **完整打包（出安装包）本机跑不了**：没装 NSIS（`makensis` 不存在）也没 WiX，
+  而 `bundle.targets` 是 `"all"`，会去下载工具链。要发安装包换台机器跑。
+- 另一个坑：沙箱的批量删除保护会打断 `vite build` 清空 `dist`
+  （`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]`），且会把 dist 删到一半。
+  遇到就手动 `rm -rf dist` 再重新构建，别留残缺的 dist。
 ## 环境
 - VS 18 Community，MSVC 14.50.35717，Rust 1.98.0，Node 24.14.0 / 22.22.2。
 - 备份放 `.workbuddy-ai/backup/`，排除 node_modules / src-tauri/target / dist。
-- 当前版本 0.6.0（v14）。v15 模板迁入 Rust store、v16 批量创建原子提交、
-  v17 schema_version 显式迁移、v18 导入导出、v19 拆分 lib.rs，
-  均未 bump 版本号，变更见 `CHANGES_V15.md` ~ `CHANGES_V19.md`。
-- git 仓库已建立，改代码前建议先提交一个基线。当前：`master` = v18，
-  `v19-split-lib` = v19（拆分 lib.rs）。
+- 当前版本 **0.7.0**（v22 bump）。v15~v21 未 bump 版本号，变更见
+  `CHANGES_V15.md` ~ `CHANGES_V23.md`。
+- git 仓库已建立，改代码前建议先提交一个基线。当前 `master` 已含 v19~v23。
 - **坑：这个环境里带斜杠的分支名（`refactor/xxx`）创建不了**。
   `git update-ref refs/heads/foo/bar` 会返回成功，但 `.git/refs/heads/foo/` 子目录
   实际没被创建，`git show-ref` 里查无此分支，HEAD 卡在"未出生"状态，

@@ -8,7 +8,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "verify:assets": "node scripts/verify-embedded-assets.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
