@@ -222,14 +222,20 @@ pub(crate) fn download_destination(app: &AppHandle, url: &Url, suggested: &mut P
 
 /// 派生 curl 时必须带 CREATE_NO_WINDOW：GUI 程序在 Windows 上启动
 /// 控制台子进程会各自弹出终端窗口（图标拉取、代理检测都是每次账号一次）。
-pub(crate) fn hidden_curl() -> Command {
-    let mut cmd = Command::new("curl");
+/// 构造一个"不弹控制台窗口"的子进程（Windows 下加 CREATE_NO_WINDOW）。
+/// **任何调用系统命令的地方都应该走这里**，否则启动时会闪一个黑框。
+pub(crate) fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     cmd
+}
+
+pub(crate) fn hidden_curl() -> Command {
+    hidden_command("curl")
 }
 
 pub(crate) fn icon_failed_memo() -> &'static Mutex<HashSet<String>> {

@@ -58,6 +58,11 @@ const MAX_PROFILE_TEMPLATES: usize = 200;
 /// 单次批量创建上限：既是性能保护，也避免误操作刷出上千个账号。
 const MAX_BULK_PROFILES: usize = 200;
 
+/// 诊断时统计账号数据目录占用的文件数上限。
+/// 浏览数据目录动辄几万个小文件，全量遍历会让诊断对话框卡住几秒，
+/// 超过上限就停止并把 `truncated` 置为 true —— 用户只需要量级，不需要精确值。
+const MAX_DIAG_FILES: u64 = 20_000;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct DownloadLedger {
     #[serde(default)]
@@ -403,6 +408,85 @@ struct ProfileDiagnostic {
     last_url_valid: bool,
     proxy_configured: bool,
     proxy_valid: bool,
+    /// 打开失败原因的归类；诊断对话框据此显示针对性建议
+    code: DiagnosticCode,
+    /// 给用户的修复建议
+    hint: String,
+    /// WebView2 Runtime 检测结果（全局，但与"打不开"强相关，一起返回）
+    runtime: WebView2Status,
+    /// 该账号数据目录的占用
+    data_dir: DataDirUsage,
+}
+
+/// 诊断错误码：把后端抛出的原始错误串归类，前端据此给出针对性修复建议，
+/// 而不是让用户对着一长串英文堆栈猜。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticCode {
+    /// 未能归类
+    Unknown,
+    /// 系统缺少 WebView2 Runtime，或版本过旧 / 安装损坏
+    Webview2Runtime,
+    /// 账号数据目录不可读写：权限不足、被其它进程占用、磁盘已满
+    DataDir,
+    /// 代理格式错误或不可达
+    Proxy,
+    /// 目标网址不可达 / 超时 / DNS 失败
+    Network,
+    /// 网址格式非法（非 http/https 等）
+    InvalidUrl,
+    /// 上次访问的网址指向了坏页面
+    BadLastUrl,
+}
+
+impl DiagnosticCode {
+    /// 一句话修复建议，直接显示在诊断对话框顶部。
+    fn hint(self) -> &'static str {
+        match self {
+            DiagnosticCode::Webview2Runtime => {
+                "系统缺少 WebView2 Runtime 或安装已损坏，请安装/修复 Microsoft Edge WebView2 Runtime 后重启本应用。"
+            }
+            DiagnosticCode::DataDir => {
+                "账号数据目录无法读写：请确认磁盘未满、目录未被安全软件锁定，必要时关闭占用进程后重试。"
+            }
+            DiagnosticCode::Proxy => {
+                "代理不可达或格式错误：请检查代理地址与端口，或先禁用代理确认直连是否正常。"
+            }
+            DiagnosticCode::Network => {
+                "目标网址无法访问：请检查网络连通性、DNS 与目标站点状态。"
+            }
+            DiagnosticCode::InvalidUrl => {
+                "网址格式不合法：请改回 http/https 开头的完整网址。"
+            }
+            DiagnosticCode::BadLastUrl => {
+                "上次访问的网址可能导致启动失败，清除后回到主页重试即可。"
+            }
+            DiagnosticCode::Unknown => "未能自动定位原因，可先尝试下方的修复操作，或查看控制台日志。",
+        }
+    }
+}
+
+/// WebView2 Runtime 检测结果。缺了它一个标签页都开不出来，
+/// 所以这是"打开失败"时第一件要确认的事。
+#[derive(Debug, Clone, Serialize)]
+struct WebView2Status {
+    installed: bool,
+    /// 形如 131.0.2903.86；检测不到时为空串
+    version: String,
+    /// 版本来源：registry-hklm / registry-hkcu / filesystem / none
+    source: String,
+}
+
+/// 账号数据目录占用。目录可能有好几 GB，统计时设文件数上限，
+/// 避免打开诊断时把界面卡住。
+#[derive(Debug, Clone, Serialize)]
+struct DataDirUsage {
+    exists: bool,
+    path: String,
+    bytes: u64,
+    file_count: u64,
+    /// 为 true 表示文件数超过统计上限，bytes / file_count 只是部分结果
+    truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -412,6 +496,12 @@ struct ProxyTestResult {
     region: String,
     isp: String,
     error: String,
+    /// 本次检测往返耗时（毫秒）。既能反映代理质量，也能区分"连不上"和"太慢"。
+    latency_ms: u64,
+    /// 请求是否真的走了代理；直连账号为 false
+    via_proxy: bool,
+    /// 实际使用的代理地址，直连时为空串
+    endpoint: String,
 }
 
 /// 站点图标获取失败的记忆（按主机名，进程内），避免每次渲染都重试。
@@ -458,6 +548,7 @@ pub fn run() {
             status::refresh_profile_statuses,
             profiles::clone_profile,
             diagnostics::diagnose_profile,
+            diagnostics::open_profile_data_dir,
             diagnostics::repair_profile_startup,
             diagnostics::test_profile_proxy,
             settings::get_app_settings,
@@ -490,6 +581,7 @@ mod tests {
     // 只有测试会直接开 store 预置数据，生产代码都走 store 模块的封装，
     // 所以这个 trait 导入放在这里，避免非 test 编译时报未使用。
     use tauri_plugin_store::StoreExt;
+    use uuid::Uuid;
 
     // ---- 昵称 ----
 
@@ -900,6 +992,117 @@ mod tests {
         };
         let sub = "files.example.com";
         assert!(sub.ends_with(&format!(".{}", rule.domain)));
+    }
+
+    // ---- 诊断：错误码分类 ----
+
+    #[test]
+    fn classify_error_maps_webview2_failures() {
+        assert_eq!(
+            classify_error("WebView2 Runtime 未安装"),
+            DiagnosticCode::Webview2Runtime
+        );
+        assert_eq!(
+            classify_error("failed to create webview: 0x80070002"),
+            DiagnosticCode::Webview2Runtime
+        );
+    }
+
+    #[test]
+    fn classify_error_prefers_proxy_over_network() {
+        // 代理错误里几乎必然带 "connection"，但归类必须是代理，
+        // 否则用户会被误导去查网络。
+        assert_eq!(
+            classify_error("proxy connection refused"),
+            DiagnosticCode::Proxy
+        );
+        assert_eq!(
+            classify_error("socks5 handshake failed"),
+            DiagnosticCode::Proxy
+        );
+        assert_eq!(classify_error("代理不可达"), DiagnosticCode::Proxy);
+    }
+
+    #[test]
+    fn classify_error_maps_io_and_network_failures() {
+        assert_eq!(
+            classify_error("Permission denied (os error 5)"),
+            DiagnosticCode::DataDir
+        );
+        // os error 32 = 文件被占用，Win 上删/改账号数据目录时常见
+        assert_eq!(
+            classify_error("文件被占用 (os error 32)"),
+            DiagnosticCode::DataDir
+        );
+        assert_eq!(
+            classify_error("request timed out after 30s"),
+            DiagnosticCode::Network
+        );
+        assert_eq!(classify_error("DNS 解析失败"), DiagnosticCode::Network);
+    }
+
+    #[test]
+    fn classify_error_maps_url_failures_and_unknown() {
+        assert_eq!(
+            classify_error("invalid url scheme: ftp"),
+            DiagnosticCode::InvalidUrl
+        );
+        assert_eq!(
+            classify_error("last_url 指向了坏页面"),
+            DiagnosticCode::BadLastUrl
+        );
+        assert_eq!(classify_error("账号不存在"), DiagnosticCode::Unknown);
+        assert_eq!(classify_error(""), DiagnosticCode::Unknown);
+    }
+
+    #[test]
+    fn every_diagnostic_code_has_a_non_empty_hint() {
+        // 每个错误码都得有建议，否则前端会显示一个空白的提示条。
+        for code in [
+            DiagnosticCode::Unknown,
+            DiagnosticCode::Webview2Runtime,
+            DiagnosticCode::DataDir,
+            DiagnosticCode::Proxy,
+            DiagnosticCode::Network,
+            DiagnosticCode::InvalidUrl,
+            DiagnosticCode::BadLastUrl,
+        ] {
+            assert!(!code.hint().is_empty(), "{code:?} 缺少修复建议");
+        }
+    }
+
+    #[test]
+    fn parse_reg_pv_reads_version_and_rejects_garbage() {
+        let output = "\r\n    pv    REG_SZ    131.0.2903.86\r\n\r\n";
+        assert_eq!(parse_reg_pv(output).as_deref(), Some("131.0.2903.86"));
+        assert_eq!(parse_reg_pv("    pv    REG_SZ    ").as_deref(), None);
+        assert_eq!(parse_reg_pv("错误: 系统找不到指定的注册表项"), None);
+    }
+
+    #[test]
+    fn measure_dir_sums_files_and_stops_at_limit() {
+        let root = std::env::temp_dir().join(format!("mab-diag-{}", Uuid::new_v4()));
+        let nested = root.join("Default").join("Cache");
+        std::fs::create_dir_all(&nested).expect("建临时目录失败");
+        std::fs::write(root.join("a.bin"), vec![0u8; 100]).expect("写文件失败");
+        std::fs::write(nested.join("b.bin"), vec![0u8; 50]).expect("写文件失败");
+
+        let usage = measure_dir(&root, 1000);
+        assert!(usage.exists);
+        assert_eq!(usage.file_count, 2);
+        assert_eq!(usage.bytes, 150);
+        assert!(!usage.truncated);
+
+        // 上限设成 1：只统计到第一个文件就应该停，并标记 truncated。
+        let limited = measure_dir(&root, 1);
+        assert!(limited.truncated);
+        assert_eq!(limited.file_count, 1);
+
+        let missing = measure_dir(&root.join("does-not-exist"), 1000);
+        assert!(!missing.exists);
+        assert_eq!(missing.file_count, 0);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ---- schema 迁移 ----

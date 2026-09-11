@@ -120,7 +120,23 @@ zip 里**不含** `scripts/cargo-msvc.sh`、`src-tauri/tests/`、`CHANGES_V15+`�
   账号 WebView 数据目录按 id 建，换 id 会丢 Cookie / 登录态。
 - 为可测性，命令体抽成 `*_impl()` 供单元测试直接调用。
 
-### 10. Rust 侧模块划分（v19 起，lib.rs 已拆分）
+### 10. Tauri 同步命令跑在主线程
+`#[tauri::command]` 的**同步**命令在**主线程**执行，里面做任何阻塞操作
+（遍历目录、跑子进程、大文件 IO）都会直接冻住界面。
+→ 这类命令必须写成 `async fn`，阻塞部分丢进 `tauri::async_runtime::spawn_blocking`。
+（v21 的 `diagnose_profile` 就是因此从 sync 改成 async 的。）
+
+### 11. 调用系统命令的两个约束
+- 一律用 `hidden_command(program)`（在 `downloads.rs`），它会加 `CREATE_NO_WINDOW`，
+  否则启动 `curl` / `reg` / `explorer` 时会闪黑框。`hidden_curl()` 已改为基于它。
+- **不要假设 `reg.exe` 一定可用**：受限环境（锁定策略、精简系统）里会静默失败。
+  v21 的 `detect_webview2_runtime()` 先查注册表、失败再扫
+  `EdgeWebView\Application\<版本>\msedgewebview2.exe` 兜底，实测很有必要
+  （本机 reg 查询就被策略拦了，文件系统兜底仍能识别到 152.0.4191.66）。
+- 命令参数里**不要让前端传路径**（会退化成"任意路径启动进程"）。
+  `open_profile_data_dir(id)` 只收 id，路径由 Rust 侧拼。
+
+### 12. Rust 侧模块划分（v19 起，lib.rs 已拆分）
 `src-tauri/src/lib.rs`（原 4326 行）已按领域拆成 9 个子模块，**改动前先确认落在哪个文件**：
 - `lib.rs` — 常量 + 全部 struct/enum 定义 + serde 默认值 + `run()` 入口 + `mod tests`
 - `webviews.rs` — WebView 创建/布局/注入脚本，**以及 URL 规则唯一真值**

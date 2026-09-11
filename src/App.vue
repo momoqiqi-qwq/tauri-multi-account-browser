@@ -27,6 +27,7 @@ import type {
   DownloadEntry,
   Profile,
   ProfileStatusEventPayload,
+  ProxyTestResult,
   UiPreferences,
 } from './types'
 
@@ -162,12 +163,12 @@ async function testProxy(profile: Profile) {
     duration: 0,
   })
   try {
-    const result = await invoke<{ ok: boolean; ip: string; region: string; isp: string; error: string }>(
-      'test_profile_proxy',
-      { id: profile.id },
-    )
+    const result = await invoke<ProxyTestResult>('test_profile_proxy', { id: profile.id })
     if (result.ok) {
-      ElMessage.success(`${profile.name} 出口：${result.ip}（${result.region} · ${result.isp}）`)
+      const route = result.via_proxy ? `代理 ${result.endpoint}` : '直连'
+      ElMessage.success(
+        `${profile.name} 出口：${result.ip}（${result.region} · ${result.isp}） · ${route} · ${result.latency_ms} ms`,
+      )
     } else {
       ElMessage.error(`${profile.name} 代理检测失败：${result.error}`)
     }

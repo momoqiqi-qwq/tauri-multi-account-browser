@@ -146,6 +146,69 @@ export interface CustomToolbarButton {
   enabled: boolean
 }
 
+/** 诊断错误码：Rust 侧 `DiagnosticCode` 的 snake_case 序列化结果 */
+export type DiagnosticCode =
+  | 'unknown'
+  | 'webview2_runtime'
+  | 'data_dir'
+  | 'proxy'
+  | 'network'
+  | 'invalid_url'
+  | 'bad_last_url'
+
+/** WebView2 Runtime 检测结果 */
+export interface WebView2Status {
+  installed: boolean
+  /** 形如 131.0.2903.86；检测不到时为空串 */
+  version: string
+  /** 版本来源：registry-hklm / registry-hkcu / filesystem / none */
+  source: string
+}
+
+/** 账号数据目录占用 */
+export interface DataDirUsage {
+  exists: boolean
+  path: string
+  bytes: number
+  file_count: number
+  /** 为 true 表示文件数超过统计上限，bytes / file_count 只是部分结果 */
+  truncated: boolean
+}
+
+/** `diagnose_profile` 的返回值 */
+export interface ProfileDiagnostic {
+  id: string
+  name: string
+  url_mode: string
+  global_default_url: string
+  effective_home_url: string
+  last_url: string
+  last_url_valid: boolean
+  proxy_configured: boolean
+  proxy_valid: boolean
+  /** 打开失败原因的归类 */
+  code: DiagnosticCode
+  /** 给用户的修复建议 */
+  hint: string
+  runtime: WebView2Status
+  data_dir: DataDirUsage
+}
+
+/** `test_profile_proxy` 的返回值 */
+export interface ProxyTestResult {
+  ok: boolean
+  ip: string
+  region: string
+  isp: string
+  error: string
+  /** 往返耗时（毫秒） */
+  latency_ms: number
+  /** 请求是否真的走了代理 */
+  via_proxy: boolean
+  /** 实际使用的代理地址，直连时为空串 */
+  endpoint: string
+}
+
 export interface UiPreferences {
   theme: ThemeId
   density: 'comfortable' | 'compact'
