@@ -91,9 +91,47 @@ zip 里**不含** `scripts/cargo-msvc.sh`、`src-tauri/tests/`、`CHANGES_V15+`�
 → **改代码前先 `tar` 备份**（排除 node_modules / target / dist），
 → 并且该项目没有 git，考虑 `git init` 建立版本控制。
 
+### 9. 导入导出架构（v18 起）
+- 文件对话框用 `tauri-plugin-dialog`（原生），**文件读写走 Rust 侧 `std::fs`**，
+  因此不受 fs 插件权限 scope 限制 —— 用户在对话框里选中的路径可直接读写。
+  只申请了 `dialog:allow-open` / `dialog:allow-save`，没有放开 fs。
+- CSV 必须用 `csv` crate，不要手写解析：昵称里带逗号/引号很常见，手写必错。
+- 两条创建路径语义不同，**不要混用**：
+  - `create_profiles_bulk`：批量创建表单，原子（整批校验通过才落盘）。
+  - `import_profiles`：导入，尽力而为 + 冲突策略 + 逐行错误报告。
+- 冲突策略 `overwrite` **必须保留原 id / created_at / order**：
+  账号 WebView 数据目录按 id 建，换 id 会丢 Cookie / 登录态。
+- 为可测性，命令体抽成 `*_impl()` 供单元测试直接调用。
+
+### 10. Rust 侧模块划分（v19 起，lib.rs 已拆分）
+`src-tauri/src/lib.rs`（原 4326 行）已按领域拆成 9 个子模块，**改动前先确认落在哪个文件**：
+- `lib.rs` — 常量 + 全部 struct/enum 定义 + serde 默认值 + `run()` 入口 + `mod tests`
+- `webviews.rs` — WebView 创建/布局/注入脚本，**以及 URL 规则唯一真值**
+  （`normalized_global_default_url` / `effective_profile_home_url` / `profile_start_url`）
+- `downloads.rs`、`profiles.rs`、`validation.rs`、`import_export.rs`、
+  `status.rs`、`store.rs`、`diagnostics.rs`、`settings.rs` — 顾名思义
+
+三条硬约定：
+1. **类型留在 `lib.rs`，只搬函数**。靠「子模块可访问父模块私有项」这条 Rust 规则，
+   子模块 `use crate::*;` 就能用 `Profile` / `AppSettings` / `STORE_FILE`，
+   **不需要把字段改成 `pub(crate)`**。别为了"整洁"把类型也搬走。
+2. **`generate_handler!` 必须写模块路径**（`profiles::list_profiles`），不能写裸名字。
+   `#[tauri::command]` 生成的 `__cmd__*` 宏留在定义它的模块里；
+   试图用 `pub(crate) use {__cmd__x, ...}` 再导出会撞 E0252 defined multiple times。
+3. 子模块里的函数要加 `pub(crate)`，否则 `lib.rs` 的 `pub(crate) use xxx::*;`
+   再导出不了私有项（E0425 cannot find function）。
+
+`lib.rs` 里那份扁平再导出只服务于 `mod tests`，加了 `#[allow(unused_imports)]`；
+生产代码跨模块调用请写模块路径。
+
+**warning 清理**：`cargo fix --lib` 能自动删未使用 import，但**它会删掉只有测试用到的
+顶层 import**（如 `StoreExt`）。测完必须再跑 `cargo check --lib --tests`，
+若报 `no method named store found` 之类，把该 import 挪进 `mod tests` 内部即可。
+
 ## 环境
 - VS 18 Community，MSVC 14.50.35717，Rust 1.98.0，Node 24.14.0 / 22.22.2。
 - 备份放 `.workbuddy-ai/backup/`，排除 node_modules / src-tauri/target / dist。
 - 当前版本 0.6.0（v14）。v15 模板迁入 Rust store、v16 批量创建原子提交、
-  v17 schema_version 显式迁移，均未 bump 版本号，变更见
-  `CHANGES_V15.md` / `CHANGES_V16.md` / `CHANGES_V17.md`。
+  v17 schema_version 显式迁移、v18 导入导出、v19 拆分 lib.rs，
+  均未 bump 版本号，变更见 `CHANGES_V15.md` ~ `CHANGES_V19.md`。
+- git 仓库已建立（分支 `refactor/split-lib`），改代码前建议先提交一个基线。
