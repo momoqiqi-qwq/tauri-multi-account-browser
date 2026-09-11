@@ -41,7 +41,7 @@ pub(crate) fn normalized_download_url(url: &Url) -> String {
 
 pub(crate) fn inferred_download_name(url: &Url) -> Option<String> {
     url.path_segments()
-        .and_then(|segments| segments.filter(|s| !s.is_empty()).last())
+        .and_then(|mut segments| segments.rfind(|s| !s.is_empty()))
         .map(|name| name.trim().to_ascii_lowercase())
         .filter(|name| !name.is_empty())
 }

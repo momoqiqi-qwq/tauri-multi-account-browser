@@ -454,7 +454,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             .trim_start_matches('\u{feff}')
             .trim()
             .to_string();
-        return Ok((!selected.is_empty()).then_some(selected));
+        Ok((!selected.is_empty()).then_some(selected))
     }
 
     #[cfg(target_os = "macos")]

@@ -128,7 +128,7 @@ pub(crate) fn layout_profile_webviews(app: &AppHandle, active_label: &str, bound
         }
         // 原生子 WebView 的 show/hide 不同平台对 document.hidden 的反馈并不一致，
         // 显式告诉注入脚本谁在前台，后台账号就停止高频状态扫描。
-        let _ = webview.eval(&profile_activity_eval_script(active));
+        let _ = webview.eval(profile_activity_eval_script(active));
     }
 }
 
@@ -1123,7 +1123,7 @@ pub(crate) fn create_profile_webview(
             if let Ok(mut started_at) = download_guard_for_page_load.lock() {
                 *started_at = Instant::now();
             }
-            let _ = webview.eval(&download_cfg_eval_script(&app_for_page_load));
+            let _ = webview.eval(download_cfg_eval_script(&app_for_page_load));
             // 刷新前若保存了页面位置，则仅恢复一次。URL hash 同时保留，
             // 对长对话/文档页面比单纯 reload 更接近刷新前的位置。
             let _ = webview.eval(
@@ -1145,7 +1145,7 @@ pub(crate) fn create_profile_webview(
             );
             // SPA 刷新/登录重定向会重建 document，重新下发前后台状态，
             // 避免隐藏账号误以为自己在前台而恢复高频扫描。
-            let _ = webview.eval(&profile_activity_eval_script(is_active_profile(
+            let _ = webview.eval(profile_activity_eval_script(is_active_profile(
                 &id_for_page_load,
             )));
         });

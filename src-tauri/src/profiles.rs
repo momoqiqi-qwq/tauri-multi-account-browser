@@ -35,6 +35,10 @@ pub(crate) fn save_profile_templates(
     Ok(templates)
 }
 
+// 参数多是因为 `#[tauri::command]` 会把每个参数摊成 invoke 载荷的一个字段，
+// 前端 `invoke('create_profile', {...})` 才能逐字段传。收成 struct 会改变前端调用形状，
+// 收益不抵改动面，这里显式放行。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) fn create_profile(
     app: AppHandle,
@@ -110,7 +114,7 @@ pub(crate) fn update_profile_batch_impl<R: Runtime>(
     let group = patch.group.as_ref().map(|value| value.trim().to_string());
 
     // ---- 应用阶段 ----
-    let mut profiles = load_profiles(&app)?;
+    let mut profiles = load_profiles(app)?;
     let mut updated = Vec::with_capacity(ids.len());
     for id in &ids {
         let index = profiles
@@ -127,7 +131,7 @@ pub(crate) fn update_profile_batch_impl<R: Runtime>(
             profile.default_url = url.clone();
         } else if mode.as_deref() == Some("inherit") {
             // 切成继承模式但没给新网址：以全局主页为准，而不是留着旧的 custom 值。
-            profile.default_url = normalized_global_default_url(&app).to_string();
+            profile.default_url = normalized_global_default_url(app).to_string();
         }
         if mode.is_some() || default_url.is_some() {
             // 还停在旧主页（或没有 last_url）的账号同步到新主页，避免下次打开还是老地址。
@@ -164,7 +168,7 @@ pub(crate) fn update_profile_batch_impl<R: Runtime>(
         updated.push(profile.clone());
     }
 
-    save_profiles(&app, &profiles)?;
+    save_profiles(app, &profiles)?;
     Ok(updated)
 }
 
@@ -196,6 +200,8 @@ pub(crate) fn create_profiles_bulk(
     Ok(created)
 }
 
+// 同 create_profile：参数逐个对应 invoke 载荷字段，保持前端调用形状不变。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) async fn update_profile(
     app: AppHandle,

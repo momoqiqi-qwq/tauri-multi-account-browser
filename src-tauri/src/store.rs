@@ -25,7 +25,7 @@ pub(crate) fn load_profiles<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<Profil
     // 用户表现为“账号点不开”。现在读取时自动迁移到可用网址，并持久化修复结果。
     let mut repaired = false;
     for profile in &mut profiles {
-        repaired |= repair_profile_urls(&app, profile);
+        repaired |= repair_profile_urls(app, profile);
     }
     if repaired {
         store.set(
@@ -87,11 +87,14 @@ pub(crate) fn stored_schema_version<R: Runtime>(app: &AppHandle<R>) -> u64 {
         .unwrap_or(0)
 }
 
+/// 单个迁移步骤：拿到 AppHandle，就地升版并写盘。
+pub(crate) type Migration<R> = fn(&AppHandle<R>) -> Result<(), String>;
+
 /// 按升版顺序排列的迁移步骤，索引 i 表示「把版本 i 升到 i + 1」。
 ///
 /// 每个步骤只做一件事：把该版本之前靠 serde default 隐式兜底的语义显式写清楚。
 /// 新增版本时往数组尾部追加函数即可，已发布的旧步骤不要再改动。
-pub(crate) fn migrations<R: Runtime>() -> Vec<fn(&AppHandle<R>) -> Result<(), String>> {
+pub(crate) fn migrations<R: Runtime>() -> Vec<Migration<R>> {
     vec![migrate_v0_to_v1::<R>, migrate_v1_to_v2::<R>]
 }
 
