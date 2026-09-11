@@ -110,19 +110,23 @@ pub(crate) fn save_profile_status<R: Runtime>(app: &AppHandle<R>, id: &str, mut 
                 status.proxy_isp = previous.proxy_isp.clone();
                 status.proxy_tested_at = previous.proxy_tested_at.clone();
             }
-            // answer_finished_at 现在是「最近一次 AI 完成回答的时间」，要持久保留，
-            // 用于侧边栏显示上次 AI 使用时间。仅在 answer_ready 从 false 翻到 true
-            // （即真正的「刚刚答完」瞬间）时才覆盖；其它情况（仍在生成 / 反复扫描）
-            // 都沿用上一次的值，避免时间戳随每次扫描往前漂。
-            if status.answer_ready && !previous.answer_ready {
+            // answer_finished_at 是「最近一次 AI 完成回答的时间」，要持久保留。
+            //
+            // 边沿信号用 **answer_generating 的下降沿**（生成中 → 不在生成），而不是
+            // answer_ready 的上升沿。原因：扫描脚本只在「后台账号」上把 answer_ready 翻
+            // 成 true（避免对当前正在看的账号弹「回答完成」提醒），所以如果以 ready
+            // 为信号，当前正在看的账号永远不会被记时间 —— 这就是 v24 第一版的坑。
+            //
+            // 其它情况（仍在生成 / 反复扫描 / 前后台）都沿用上一次的值，避免时间戳
+            // 随每次扫描往前漂。
+            if !status.answer_generating && previous.answer_generating {
                 status.answer_finished_at = Some(Utc::now().to_rfc3339());
             } else {
                 status.answer_finished_at = previous.answer_finished_at.clone();
             }
-        } else if status.answer_ready {
-            // 首次上报且已经 ready：当作刚答完，记下时间。
-            status.answer_finished_at = Some(Utc::now().to_rfc3339());
         }
+        // 没有 previous 时不主动记时间：可能是刚加载的标签页（脚本状态被重置），
+        // 也可能是首次创建账号。等下一次出现生成→不生成的真实边沿再记。
 
         map.insert(id.to_string(), status.clone());
         if let Ok(value) = serde_json::to_value(&map) {

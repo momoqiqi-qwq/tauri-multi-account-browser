@@ -1411,6 +1411,7 @@ mod tests {
         let store = handle.store(STORE_FILE).expect("store 打开失败");
         store.delete(STORE_KEY);
         store.delete(SETTINGS_KEY);
+        store.delete(STATUS_KEY);
         store.delete(PROFILE_TEMPLATES_KEY);
         store.set(SCHEMA_VERSION_KEY, serde_json::json!(0));
         store.save().expect("重置 store 失败");
@@ -1562,17 +1563,42 @@ mod tests {
     }
 
     #[test]
-    fn answer_finished_at_is_set_on_first_ready_report() {
+    fn answer_finished_at_is_set_on_generating_to_idle_edge() {
         let app = mock_app();
         let handle = app.handle().clone();
         reset_store(&handle);
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
         );
-        let status = load_status(&handle, "A").expect("首次 ready 应写入状态");
-        assert!(status.answer_finished_at.is_some(), "首次 ready 应记下完成时间");
+        assert!(
+            load_status(&handle, "A")
+                .unwrap()
+                .answer_finished_at
+                .is_none(),
+            "生成中状态本身不应记时间"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
+        );
+        assert!(
+            load_status(&handle, "A")
+                .unwrap()
+                .answer_finished_at
+                .is_some(),
+            "generating 下降沿应记下完成时间"
+        );
     }
 
     #[test]
@@ -1580,76 +1606,176 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         reset_store(&handle);
+        // 先 generating=true 再下降沿，记下时间。
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                answer_ready: true,
+                ..Default::default()
+            },
         );
         let first = load_status(&handle, "A").unwrap().answer_finished_at;
-        assert!(first.is_some(), "前置：ready 后应有 finished_at");
+        assert!(first.is_some(), "前置：下降沿后应有 finished_at");
 
         clear_profile_answer_ready(&handle, "A");
         let after = load_status(&handle, "A").expect("已读不应删除整条状态");
         assert!(!after.answer_ready, "未读提醒应被清掉");
-        assert_eq!(after.answer_finished_at, first, "已读不应清掉 AI 使用时间");
+        assert_eq!(
+            after.answer_finished_at, first,
+            "已读不应清掉 AI 使用时间"
+        );
     }
 
     #[test]
-    fn answer_finished_at_does_not_drift_on_repeated_ready() {
+    fn answer_finished_at_does_not_drift_on_repeated_idle() {
         let app = mock_app();
         let handle = app.handle().clone();
         reset_store(&handle);
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
         );
-        let first = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
-
-        // 间隔几毫秒再报一次 ready=true，确保时间戳本身已经变了；
-        // 没做边沿检测的话 finished_at 会被刷成"新"时间。
         std::thread::sleep(std::time::Duration::from_millis(3));
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
+        );
+        let first = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
+
+        // 反复上报 idle：没有新的下降沿，时间戳不应再被刷新。
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
         );
         let second = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
 
-        assert_eq!(first, second, "连续两次 ready=true 不应把时间戳往后推");
+        assert_eq!(
+            first, second,
+            "连续两次 generating=false 不应把时间戳往后推"
+        );
     }
 
     #[test]
-    fn answer_finished_at_updates_on_subsequent_ready_edge() {
+    fn answer_finished_at_updates_on_subsequent_generating_edge() {
         let app = mock_app();
         let handle = app.handle().clone();
         reset_store(&handle);
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
         );
         let first = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
 
-        // AI 重新开始：生成中（ready=false, generating=true）。
-        // finished_at 应沿用旧的，不该被这次上报清掉。
+        // AI 重新开始：generating=true。
         std::thread::sleep(std::time::Duration::from_millis(3));
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: false, answer_generating: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
         );
         let during = load_status(&handle, "A").unwrap().answer_finished_at;
-        assert_eq!(during, Some(first.clone()), "生成中应沿用旧的完成时间");
+        assert_eq!(
+            during,
+            Some(first.clone()),
+            "生成中应沿用旧的完成时间"
+        );
 
-        // AI 又答完一次：ready=true 是新的边沿，应覆盖。
+        // AI 又答完一次：新的下降沿，应覆盖为新时间。
         std::thread::sleep(std::time::Duration::from_millis(3));
         save_profile_status(
             &handle,
             "A",
-            ProfileStatus { answer_ready: true, ..Default::default() },
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
         );
         let second = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
         assert_ne!(first, second, "新一轮「刚刚答完」应覆盖为新时间");
+    }
+
+    /// v24 修正后的关键回归点：扫描脚本只在后台账号上把 answer_ready 翻 true
+    ///（见 webviews.rs `answerReady = !profileActive`），当前正在看的账号
+    /// ready 永远不翻。如果还以 ready 边沿为信号，正看的账号的时间就永远不会被更新。
+    /// 这条测试用纯 generating 序列模拟「当前正在看的账号」，验证下降沿一样能记时间。
+    #[test]
+    fn answer_finished_at_updates_for_active_profile_via_generating_edge() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        // 当前正在看的账号：扫描脚本不会把 answer_ready 翻 true。
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                answer_ready: false,
+                ..Default::default()
+            },
+        );
+        assert!(
+            load_status(&handle, "A")
+                .unwrap()
+                .answer_finished_at
+                .is_none()
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                answer_ready: false,
+                ..Default::default()
+            },
+        );
+        assert!(
+            load_status(&handle, "A")
+                .unwrap()
+                .answer_finished_at
+                .is_some(),
+            "对当前正在看的账号，generating 下降沿同样要记时间"
+        );
     }
 }

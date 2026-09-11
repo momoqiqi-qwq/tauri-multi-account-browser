@@ -14,6 +14,13 @@
 
 ## 2. 持久化 `answer_finished_at`
 
+> **修正（同日）**：本节初版用 `answer_ready` 的上升沿作边沿信号，是错的。
+> 扫描脚本 `webviews.rs::checkAnswerState` 里是 `answerReady = !profileActive` ——
+> **只有后台账号才会把 `answer_ready` 翻成 true**（避免对当前正在看的账号弹
+> "回答完成"提醒）。所以按 ready 边沿记时间的话，**当前正在看的账号的时间永远不会更新**。
+> 现改用 `answer_generating` 的下降沿（生成中 → 不在生成），对前后台账号一视同仁。
+> 详见第 2.1 节。
+
 `status.rs::save_profile_status` 旧逻辑：
 
 ```rust
@@ -73,6 +80,38 @@ if status.answer_ready {
 迁移策略：归一化时优先读新键 `showAiUsageTime`；旧键 `showStatusUpdatedTime` 仅
 作读取兼容 —— 旧 localStorage 里存在该键就沿用其值，否则取默认 `true`。新数据
 持久化时只写新键，旧键自然过期。
+
+### 2.1 同日修正：改用 `answer_generating` 下降沿
+
+初版的边沿检测是错的，原因如上。
+
+新逻辑（`status.rs::save_profile_status`）：
+
+```rust
+if !status.answer_generating && previous.answer_generating {
+    status.answer_finished_at = Some(Utc::now().to_rfc3339());
+} else {
+    status.answer_finished_at = previous.answer_finished_at.clone();
+}
+```
+
+`clear_profile_answer_ready` 不再动 `answer_finished_at` —— 它继续清 `answer_ready`
+（未读提醒），时间戳与未读提醒从此解耦。
+
+测试同步改写：
+- `answer_finished_at_is_set_on_generating_to_idle_edge`
+- `answer_finished_at_does_not_drift_on_repeated_idle`
+- `answer_finished_at_updates_on_subsequent_generating_edge`
+- `clear_profile_answer_ready_preserves_finished_at`（沿用上一节）
+- **新增** `answer_finished_at_updates_for_active_profile_via_generating_edge` ——
+  这是关键回归点：用 `answer_ready` 永远不翻的纯 `generating` 序列，验证正在看的账号
+  也能记时间。
+
+### 2.2 同日修正：测试基建隔离 bug
+
+`reset_store()` 只清了 `STORE_KEY` / `SETTINGS_KEY` / `PROFILE_TEMPLATES_KEY`，没清
+`STATUS_KEY` —— 而 store 是进程内共享的（MEMORY.md 坑 6）。新增 5 个 status 测试
+之后立刻串数据。**修正**：`reset_store()` 一并 `store.delete(STATUS_KEY)`。
 
 ## 4. 自动刷新翻转
 
