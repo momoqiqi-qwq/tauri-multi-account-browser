@@ -113,6 +113,15 @@ pub(crate) fn update_profile_batch_impl<R: Runtime>(
     };
     let group = patch.group.as_ref().map(|value| value.trim().to_string());
 
+    // 切成继承模式时的全局主页，循环外算一次。
+    // normalized_global_default_url 内部会整份反序列化设置，N 个账号就是 N 次，
+    // 而这个命令跑在主线程上。
+    let global_default = if mode.as_deref() == Some("inherit") {
+        Some(normalized_global_default_url(app).to_string())
+    } else {
+        None
+    };
+
     // ---- 应用阶段 ----
     let mut profiles = load_profiles(app)?;
     let mut updated = Vec::with_capacity(ids.len());
@@ -129,9 +138,9 @@ pub(crate) fn update_profile_batch_impl<R: Runtime>(
         }
         if let Some(ref url) = default_url {
             profile.default_url = url.clone();
-        } else if mode.as_deref() == Some("inherit") {
+        } else if let Some(ref global) = global_default {
             // 切成继承模式但没给新网址：以全局主页为准，而不是留着旧的 custom 值。
-            profile.default_url = normalized_global_default_url(app).to_string();
+            profile.default_url = global.clone();
         }
         if mode.is_some() || default_url.is_some() {
             // 还停在旧主页（或没有 last_url）的账号同步到新主页，避免下次打开还是老地址。
@@ -189,9 +198,11 @@ pub(crate) fn create_profiles_bulk(
     }
     let mut profiles = load_profiles(&app)?;
     let base = profiles.len();
+    // 全局主页只解析一次：build_profile 每次调用都会反序列化一遍设置，N 个草稿就是 N 次。
+    let global_default = normalized_global_default_url(&app);
     let mut created = Vec::with_capacity(drafts.len());
     for (offset, draft) in drafts.into_iter().enumerate() {
-        let profile = build_profile(&app, draft, base + offset)
+        let profile = build_profile_with_global(draft, base + offset, &global_default)
             .map_err(|e| format!("第 {} 个账号：{e}", offset + 1))?;
         created.push(profile);
     }

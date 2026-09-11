@@ -349,6 +349,19 @@ pub(crate) fn build_profile<R: Runtime>(
     draft: ProfileDraft,
     base_order: usize,
 ) -> Result<Profile, String> {
+    let global_default = normalized_global_default_url(app);
+    build_profile_with_global(draft, base_order, &global_default)
+}
+
+/// 批量场景用这个：全局主页只解析一次。
+///
+/// `normalized_global_default_url` 内部会把设置整份反序列化一遍，批量创建 200 个账号
+/// 就是 200 次 —— 而且这些命令跑在主线程上。调用方先算好再传进来。
+pub(crate) fn build_profile_with_global(
+    draft: ProfileDraft,
+    base_order: usize,
+    global_default: &Url,
+) -> Result<Profile, String> {
     let name = sanitize_profile_name(&draft.name)?;
     // 空网址不是错误。inherit 模式以后端全局主页为唯一真值，避免调用方携带旧默认值。
     let requested_default_url = normalize_url(&draft.default_url)?.to_string();
@@ -358,7 +371,7 @@ pub(crate) fn build_profile<R: Runtime>(
         _ => return Err("网址模式不合法".to_string()),
     };
     let default_url = if url_mode == "inherit" {
-        normalized_global_default_url(app).to_string()
+        global_default.to_string()
     } else {
         requested_default_url
     };

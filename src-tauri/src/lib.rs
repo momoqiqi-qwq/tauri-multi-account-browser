@@ -1187,6 +1187,46 @@ mod tests {
     }
 
     #[test]
+    fn update_profile_batch_inherit_mode_falls_back_to_global_home() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        let seeded = seed_profiles(&handle, &["A", "B"]);
+
+        // 先切成独立网址，才能验证切回 inherit 时确实回落到全局主页。
+        update_profile_batch_impl(
+            &handle,
+            seeded.clone(),
+            ProfileBatchPatch {
+                url_mode: Some("custom".to_string()),
+                default_url: Some("https://example.org/".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("改成独立网址应成功");
+
+        // 只给 url_mode 不给网址：应回落到全局主页，而不是留着旧的 custom 值。
+        update_profile_batch_impl(
+            &handle,
+            seeded.clone(),
+            ProfileBatchPatch {
+                url_mode: Some("inherit".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("切回继承应成功");
+
+        let reloaded = load_profiles(&handle).expect("读取失败");
+        for id in &seeded {
+            let profile = reloaded.iter().find(|p| &p.id == id).expect("账号应存在");
+            assert_eq!(profile.url_mode, "inherit");
+            assert_eq!(profile.default_url, DEFAULT_PROFILE_URL);
+            // 原本停在旧主页上的账号应同步到新主页
+            assert_eq!(profile.last_url, DEFAULT_PROFILE_URL);
+        }
+    }
+
+    #[test]
     fn tags_survive_json_roundtrip_on_profile() {
         // 历史数据没有 tags 字段：靠 serde default 兜底，不应反序列化失败。
         let json = r#"{"id":"p1","name":"A","note":"","created_at":"2026-01-01T00:00:00Z","order":0,"incognito":false}"#;
