@@ -100,7 +100,41 @@ serde default 兜底，旧文件仍可导入。已加测试锁死这条。
 顺手修了测试基建的一个坑：`save_profiles` 是**整表覆盖**，
 原来的 `seed_profile()` 循环调用会互相覆盖，改成 `seed_profiles()` 一次性写入。
 
-## 7. 验证
+## 7. 构建修正：`cargo build --release` 产出的不是生产二进制
+
+（这轮复查时发现，属于既有问题，与 v22 功能无关但影响所有发布）
+
+**现象**：`cargo build --release` 编译成功，但产出的 exe 里**没有前端资源**。
+用 `useTabs.ts` 里的纯 ASCII 标记 `mab-tab-session-v12` 去 exe 里搜，0 命中；
+Rust 侧的 `mbstatus` 能搜到 —— 说明不是搜索方法的问题。
+
+**根因**：`src-tauri/Cargo.toml` **完全没有 `[features]` 段**，缺了官方模板里的：
+
+```toml
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+```
+
+tauri 2.11.5 里 `is_dev()` 的定义是 `!cfg!(feature = "custom-protocol")` ——
+没开这个 feature，应用就跑在**开发模式**，会去连 `devUrl`（http://localhost:1420）
+而不是加载打包进来的前端，表现为打开后白屏 / 连不上。官方注释也明确写了
+"Feature managed by the Tauri CLI"，`tauri build` 会自动带上它。
+
+**验证对比**：
+
+| 构建方式 | exe 大小 | 资源名是否嵌入 |
+|---|---:|---|
+| `cargo build --release` | 5,118,976 B | 否 |
+| `cargo build --release --features custom-protocol` | 5,491,712 B | 是（`index-*.js` / `index-*.css`）|
+
+**处理**：补上 `[features]` 段并加注释说明原因。
+真正的发布仍应走 `npm run tauri:build`（CLI 会自动带 feature 并打包安装包）；
+直接用 cargo 时必须显式 `--features custom-protocol`。
+
+> 顺带一提：之前几轮"release 构建通过"的结论，只能证明**编译通过**，
+> 不能证明二进制可用 —— 现在已经能区分这两件事了。
+
+## 8. 验证
 
 | 项目 | 结果 |
 |---|---|

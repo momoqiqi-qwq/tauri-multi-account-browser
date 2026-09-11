@@ -3,7 +3,7 @@
 ## 技术栈与版本
 - Tauri 2 + Rust + Vue 3 + TypeScript + Element Plus，Vite 7。
 - 版本号需三处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`。
-- 当前版本 **0.6.0**（对应 CHANGES_V14）。
+- 当前版本 **0.7.0**（v21/v22 加功能后从 0.6.0 bump；三处需同步）。
 - 版本命名规律：CHANGES_V{n}.md 记录第 n 轮需求，不一定与 semver 一一对应（V10=0.5.0，V13=0.5.1，V14=0.6.0）。
 
 ## 架构约定
@@ -172,6 +172,26 @@ zip 里**不含** `scripts/cargo-msvc.sh`、`src-tauri/tests/`、`CHANGES_V15+`�
 - 测试基建坑：`save_profiles` 是**整表覆盖**，`seed_profile()` 循环调用会互相抹掉，
   要多个账号就用 `seed_profiles()` 一次性写入。
 
+### 14. 发布构建必须开 custom-protocol（重要，别再踩）
+`cargo build --release` **不等于**可用的发布二进制。
+tauri 2.x 里 `is_dev() = !cfg!(feature = "custom-protocol")`；不开这个 feature：
+- 前端资源**不会**打进 exe；
+- 应用跑在 dev 模式，去连 `devUrl`（localhost:1420）→ 白屏。
+
+**`src-tauri/Cargo.toml` 必须有**（官方模板自带，此项目曾缺失）：
+```toml
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+```
+- 真正发布走 `npm run tauri:build`（CLI 自动带 feature，并打安装包）；
+- 直接用 cargo 时必须显式 `bash ../scripts/cargo-msvc.sh build --release --features custom-protocol`。
+
+**怎么验证资源真的打进去了**（编译通过 ≠ 二进制可用）：
+```
+grep -ao "index-[A-Za-z0-9_-]*\.\(js\|css\)" src-tauri/target/release/*.exe
+```
+能列出 dist 里的文件名才算成功。注意只改前端时 cargo 不会重嵌资源，需先
+`touch src-tauri/build.rs`。
 ## 环境
 - VS 18 Community，MSVC 14.50.35717，Rust 1.98.0，Node 24.14.0 / 22.22.2。
 - 备份放 `.workbuddy-ai/backup/`，排除 node_modules / src-tauri/target / dist。
