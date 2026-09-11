@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ref } from 'vue'
-import type { ProfileBatchPatch, ProfileViewMode } from '../types'
+import type { ProfileBatchPatch } from '../types'
 
 const props = defineProps<{
   /** 已选中的账号 id */
@@ -85,11 +84,9 @@ async function moveToGroup() {
   await apply({ group: value.trim() })
 }
 
-const quickTag = ref('')
 async function applyQuickTag(tag: string) {
   if (!tag) return
   await apply({ tags_add: [tag] })
-  quickTag.value = ''
 }
 </script>
 

@@ -279,7 +279,19 @@ async function ensureIcon(profile: Profile) {
   }
 }
 
-watch(() => props.profiles, (list) => list.forEach(ensureIcon), { immediate: true })
+watch(
+  () => props.profiles,
+  (list) => {
+    list.forEach(ensureIcon)
+    // 选中项必须始终是当前可见账号的子集。搜索/视图切换/标签筛选/删除之后不清的话，
+    // 批量操作会打到用户根本看不见的账号上 —— 比如"清空标签"误伤被过滤掉的账号。
+    if (selected.value.length) {
+      const visible = new Set(list.map((profile) => profile.id))
+      selected.value = selected.value.filter((id) => visible.has(id))
+    }
+  },
+  { immediate: true },
+)
 
 function iconFor(profile: Profile): string | null {
   return iconCache.value[profile.id] ?? null
