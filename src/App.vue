@@ -84,6 +84,10 @@ const {
   statuses,
   searchQuery,
   filteredProfiles,
+  visibleProfiles,
+  viewMode,
+  activeTag,
+  allTags,
   profileGroups,
   editingProfile,
   editorVisible,
@@ -335,12 +339,15 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-shell">
     <ProfileSidebar
-      :profiles="filteredProfiles"
+      :profiles="visibleProfiles"
       :total="profiles.length"
       :active-id="activeId"
       :open-tabs="openTabs"
       :collapsed="profileSidebarCollapsed"
+      :all-tags="allTags"
       v-model:search="searchQuery"
+      v-model:view-mode="viewMode"
+      v-model:active-tag="activeTag"
       @toggle="toggleProfileSidebar"
       @open-create="accounts.openCreateDialog"
       @open-tools="accountToolsVisible = true"
@@ -352,6 +359,8 @@ onBeforeUnmount(() => {
       @move-group="accounts.moveProfileToGroup"
       @clone="accounts.cloneProfile"
       @test-proxy="testProxy"
+      @toggle-favorite="accounts.toggleFavorite"
+      @batch="accounts.updateBatch"
     />
     <StatusSidebar
       :profiles="filteredProfiles"
@@ -439,6 +448,7 @@ onBeforeUnmount(() => {
       v-model="editorVisible"
       :profile="editingProfile"
       :groups="profileGroups"
+      :known-tags="allTags"
       :saving="profileSaving"
       :global-default-url="dlSettings?.global_default_url || 'https://chat01.ai/'"
       @create="accounts.createProfile"

@@ -5,9 +5,11 @@ import { acquireWebviewSuppression } from '../lib/suppress'
 import type { TabsApi } from './useTabs'
 import type {
   Profile,
+  ProfileBatchPatch,
   ProfileIsolationSettings,
   ProfileStatus,
   ProfileStatusEventPayload,
+  ProfileViewMode,
 } from '../types'
 
 export interface ProfilesDeps {
@@ -25,6 +27,14 @@ export interface ProfilesApi {
   searchQuery: Ref<string>
   /** 按名称 / 分组过滤后的账号，两个侧边栏共用；空关键词返回全部。 */
   filteredProfiles: Ref<Profile[]>
+  /** 侧边栏实际显示的账号：搜索 + 视图模式（全部/收藏/最近）+ 标签筛选。 */
+  visibleProfiles: Ref<Profile[]>
+  /** 侧边栏视图模式 */
+  viewMode: Ref<ProfileViewMode>
+  /** 当前选中的标签；null 表示不按标签过滤 */
+  activeTag: Ref<string | null>
+  /** 所有账号上出现过的标签（不受当前筛选影响），用于侧边栏的标签筛选条 */
+  allTags: Ref<string[]>
   /** 新建/编辑账号时的分组下拉：按侧边栏出现顺序去重。 */
   profileGroups: Ref<string[]>
   /** 新建账号对话框：null 表示新建，非空表示编辑该账号 */
@@ -40,6 +50,10 @@ export interface ProfilesApi {
   openEditDialog(profile: Profile): void
   createProfile(settings: ProfileIsolationSettings): Promise<void>
   updateProfile(id: string, settings: ProfileIsolationSettings): Promise<void>
+  /** 批量修改。Rust 侧先全量校验再一次落盘，失败时整批不改。 */
+  updateBatch(ids: string[], patch: ProfileBatchPatch): Promise<void>
+  /** 切换单个账号的收藏状态（内部走批量命令，保证与批量操作同一套校验） */
+  toggleFavorite(profile: Profile): Promise<void>
   deleteProfile(profile: Profile): Promise<void>
   clearProfile(profile: Profile): Promise<void>
   cloneProfile(profile: Profile): Promise<void>
@@ -53,6 +67,8 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
 
   const statuses = ref<Record<string, ProfileStatus>>({})
   const searchQuery = ref('')
+  const viewMode = ref<ProfileViewMode>('all')
+  const activeTag = ref<string | null>(null)
   const editingProfile = ref<Profile | null>(null)
   const editorVisible = ref(false)
   const profileSaving = ref(false)
@@ -64,6 +80,38 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
       (p) =>
         p.name.toLowerCase().includes(query) || (p.group && p.group.toLowerCase().includes(query)),
     )
+  })
+
+  /** 最近使用：按 last_used_at 倒序，只取有记录的，最多 12 个。 */
+  const recentProfiles = computed(() =>
+    profiles.value
+      .filter((p) => !!p.last_used_at)
+      .slice()
+      .sort((a, b) => (b.last_used_at ?? '').localeCompare(a.last_used_at ?? ''))
+      .slice(0, 12),
+  )
+
+  /** 全量标签（不受筛选影响），按出现次数倒序，保证筛选条不会随筛选跳动。 */
+  const allTags = computed(() => {
+    const counts = new Map<string, number>()
+    for (const profile of profiles.value) {
+      for (const tag of profile.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([tag]) => tag)
+  })
+
+  const visibleProfiles = computed(() => {
+    let list = filteredProfiles.value
+    if (viewMode.value === 'favorite') list = list.filter((p) => p.favorite)
+    if (viewMode.value === 'recent') {
+      const recent = new Set(recentProfiles.value.map((p) => p.id))
+      list = list.filter((p) => recent.has(p.id))
+    }
+    if (activeTag.value) {
+      const tag = activeTag.value
+      list = list.filter((p) => (p.tags ?? []).includes(tag))
+    }
+    return list
   })
 
   const profileGroups = computed(() => {
@@ -126,6 +174,7 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
         locale: settings.locale,
         fingerprintGuard: settings.fingerprintGuard,
         group: settings.group,
+        tags: settings.tags ?? [],
       })
       await loadProfiles()
       editorVisible.value = false
@@ -156,6 +205,7 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
         locale: settings.locale,
         fingerprintGuard: settings.fingerprintGuard,
         group: settings.group,
+        tags: settings.tags ?? [],
       })
       await loadProfiles()
       editorVisible.value = false
@@ -177,6 +227,24 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
     } finally {
       profileSaving.value = false
     }
+  }
+
+  async function updateBatch(ids: string[], patch: ProfileBatchPatch) {
+    if (!ids.length) {
+      ElMessage.warning('请先选择账号')
+      return
+    }
+    try {
+      await invoke<Profile[]>('update_profile_batch', { ids, patch })
+      await loadProfiles()
+    } catch (error) {
+      // Rust 侧是原子提交，失败时一个账号都没改，所以这里只需提示，不需要回滚前端。
+      ElMessage.error(`批量修改失败：${String(error)}`)
+    }
+  }
+
+  async function toggleFavorite(profile: Profile) {
+    await updateBatch([profile.id], { favorite: !profile.favorite })
   }
 
   async function deleteProfile(profile: Profile) {
@@ -268,6 +336,10 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
     statuses,
     searchQuery,
     filteredProfiles,
+    visibleProfiles,
+    viewMode,
+    activeTag,
+    allTags,
     profileGroups,
     editingProfile,
     editorVisible,
@@ -281,6 +353,8 @@ export function useProfiles(deps: ProfilesDeps): ProfilesApi {
     openEditDialog,
     createProfile,
     updateProfile,
+    updateBatch,
+    toggleFavorite,
     deleteProfile,
     clearProfile,
     cloneProfile,

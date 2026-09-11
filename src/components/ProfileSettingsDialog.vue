@@ -12,6 +12,8 @@ const props = defineProps<{
   profile: Profile | null
   /** 已有分组，用于新建/编辑账号时直接下拉选择 */
   groups: string[]
+  /** 已有标签，用于下拉建议 */
+  knownTags: string[]
   saving: boolean
   globalDefaultUrl: string
 }>()
@@ -48,6 +50,7 @@ const form = reactive<ProfileIsolationSettings>({
   locale: '',
   fingerprintGuard: true,
   group: '',
+  tags: [],
 })
 
 // 对话框是全屏遮罩，打开期间隐藏账号 WebView，否则遮罩和表单会被网页盖住。
@@ -67,6 +70,7 @@ watch(visible, (open) => {
     form.locale = p?.locale ?? ''
     form.fingerprintGuard = p?.fingerprint_guard ?? true
     form.group = p?.group ?? ''
+    form.tags = [...(p?.tags ?? [])]
   } else {
     releaseDialog?.()
     releaseDialog = null
@@ -137,6 +141,21 @@ function submit() {
           <el-option v-for="group in groups" :key="group" :label="group" :value="group" />
         </el-select>
         <small class="iso-hint">下拉会显示现有分组；也可以直接输入新的分组名称。</small>
+      </el-form-item>
+      <el-form-item label="标签（可选，用于跨分组归类与批量筛选）">
+        <el-select
+          v-model="form.tags"
+          multiple
+          filterable
+          allow-create
+          default-first-option
+          :multiple-limit="12"
+          placeholder="输入后回车即可新建标签"
+          style="width: 100%"
+        >
+          <el-option v-for="tag in knownTags" :key="tag" :label="tag" :value="tag" />
+        </el-select>
+        <small class="iso-hint">打标后可在侧边栏顶部按标签筛选，或用批量操作条一次性打给多个账号。</small>
       </el-form-item>
       <el-form-item label="主页来源">
         <el-segmented v-model="form.urlMode" :options="[{ label: '继承全局', value: 'inherit' }, { label: '单独覆盖', value: 'custom' }]" />

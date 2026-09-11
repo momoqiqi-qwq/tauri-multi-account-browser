@@ -92,7 +92,31 @@ pub(crate) fn stored_schema_version<R: Runtime>(app: &AppHandle<R>) -> u64 {
 /// 每个步骤只做一件事：把该版本之前靠 serde default 隐式兜底的语义显式写清楚。
 /// 新增版本时往数组尾部追加函数即可，已发布的旧步骤不要再改动。
 pub(crate) fn migrations<R: Runtime>() -> Vec<fn(&AppHandle<R>) -> Result<(), String>> {
-    vec![migrate_v0_to_v1::<R>]
+    vec![migrate_v0_to_v1::<R>, migrate_v1_to_v2::<R>]
+}
+
+/// v1 -> v2：账号新增 tags / favorite / last_used_at。
+///
+/// 三个新字段都带 `#[serde(default)]`，反序列化历史数据不会失败，
+/// 所以这里**不是**为了"补默认值"，而是把已存在的脏数据规范化：
+/// 历史写入路径没走过 `normalize_tags`，标签可能有空白、重复、超长。
+pub(crate) fn migrate_v1_to_v2<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let mut profiles = load_profiles(app)?;
+    let mut changed = false;
+    for profile in &mut profiles {
+        if profile.tags.is_empty() {
+            continue;
+        }
+        let normalized = normalize_tags(&profile.tags);
+        if normalized != profile.tags {
+            profile.tags = normalized;
+            changed = true;
+        }
+    }
+    if changed {
+        save_profiles(app, &profiles)?;
+    }
+    Ok(())
 }
 
 /// v0 -> v1：把历史数据里「靠 serde default 才成立」的字段补齐并落盘。

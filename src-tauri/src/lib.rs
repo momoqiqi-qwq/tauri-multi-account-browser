@@ -48,7 +48,8 @@ const DOWNLOAD_RETURN_URL: &str = DEFAULT_PROFILE_URL;
 /// store 结构版本号。加字段或改变字段语义时递增，并在 `migrate_store` 里补一段迁移。
 /// - 0：无版本号的历史数据（v14 及之前）。
 /// - 1：引入 schema_version 本身，并把此前散落的隐式兼容显式化。
-const SCHEMA_VERSION: u64 = 1;
+/// - 2：账号新增 tags / favorite / last_used_at。
+const SCHEMA_VERSION: u64 = 2;
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
@@ -57,6 +58,12 @@ const MAX_PROFILE_TEMPLATES: usize = 200;
 
 /// 单次批量创建上限：既是性能保护，也避免误操作刷出上千个账号。
 const MAX_BULK_PROFILES: usize = 200;
+
+/// 单个账号最多打几个标签：防止标签区把账号卡片撑爆。
+const MAX_PROFILE_TAGS: usize = 12;
+
+/// 单个标签的最大字符数。
+const MAX_TAG_LEN: usize = 24;
 
 /// 诊断时统计账号数据目录占用的文件数上限。
 /// 浏览数据目录动辄几万个小文件，全量遍历会让诊断对话框卡住几秒，
@@ -120,6 +127,15 @@ struct Profile {
     /// 账号分组，空表示未分组。
     #[serde(default)]
     group: String,
+    /// 自由标签，用于跨分组归类（如"客服""投放"）。写入前经 `normalize_tags` 规范化。
+    #[serde(default)]
+    tags: Vec<String>,
+    /// 收藏：侧边栏可只看收藏。
+    #[serde(default)]
+    favorite: bool,
+    /// 最近一次被打开的时间（RFC3339）。未打开过为 None。
+    #[serde(default)]
+    last_used_at: Option<String>,
 }
 
 /// 账号模板：一次配置、反复套用，用于批量建号。
@@ -177,6 +193,9 @@ struct ProfileDraft {
     fingerprint_guard: Option<bool>,
     #[serde(default)]
     group: Option<String>,
+    /// 标签；None 表示"不改动"，Some([]) 表示清空。
+    #[serde(default)]
+    tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,9 +401,14 @@ struct CsvAccountRow {
     fingerprint_guard: String,
     #[serde(default)]
     group: String,
+    /// 多个标签用 `|` 分隔（标签本身可能含逗号，用逗号分隔会和 CSV 语义混淆）。
+    #[serde(default)]
+    tags: String,
 }
 
-const CSV_HEADER: [&str; 10] = [
+/// CSV 列顺序。**只许在末尾追加**：历史导出的 CSV 靠位置解析，
+/// 缺 trailing 列时 serde default 会兜底，旧文件仍可导入。
+const CSV_HEADER: [&str; 11] = [
     "name",
     "default_url",
     "url_mode",
@@ -395,7 +419,32 @@ const CSV_HEADER: [&str; 10] = [
     "locale",
     "fingerprint_guard",
     "group",
+    "tags",
 ];
+
+/// CSV 里多个标签的分隔符。
+const CSV_TAG_SEPARATOR: char = '|';
+
+/// 批量修改账号的补丁。全是 Option：None 表示"这一项不改"。
+///
+/// 之所以做成一个 patch 而不是给每个操作开一个命令，是因为侧边栏的批量操作条
+/// 会同时勾好几项（比如"改主页模式 + 打标签 + 收藏"），
+/// 拆成多个命令就要写盘多次，中间失败还会留下半改状态。
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ProfileBatchPatch {
+    /// inherit / custom
+    url_mode: Option<String>,
+    /// 只有 url_mode = custom 时才有意义；空串表示不改
+    default_url: Option<String>,
+    /// 追加标签（已存在则忽略）
+    tags_add: Option<Vec<String>>,
+    /// 删除标签，大小写不敏感
+    tags_remove: Option<Vec<String>>,
+    /// 覆盖标签；Some([]) 表示清空
+    tags_set: Option<Vec<String>>,
+    favorite: Option<bool>,
+    group: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct ProfileDiagnostic {
@@ -533,6 +582,7 @@ pub fn run() {
             import_export::read_import_file,
             import_export::write_export_file,
             profiles::update_profile,
+            profiles::update_profile_batch,
             profiles::reorder_profiles,
             profiles::move_profile_to_group,
             profiles::activate_profile,
@@ -794,6 +844,7 @@ mod tests {
                 locale: Some("zh-CN".to_string()),
                 fingerprint_guard: Some(false),
                 group: Some("g1".to_string()),
+                tags: Some(vec!["客服".to_string(), "VIP".to_string()]),
             },
             ProfileDraft {
                 name: "引号\"账号".to_string(),
@@ -806,6 +857,7 @@ mod tests {
                 locale: None,
                 fingerprint_guard: None,
                 group: None,
+                tags: None,
             },
         ];
         let csv = build_csv_accounts(&drafts).expect("序列化 CSV 失败");
@@ -817,8 +869,24 @@ mod tests {
         assert!(parsed[0].incognito);
         assert_eq!(parsed[0].fingerprint_guard, Some(false));
         assert_eq!(parsed[0].group.as_deref(), Some("g1"));
+        // 标签用 | 分隔，往返后应还原成原列表
+        assert_eq!(
+            parsed[0].tags.as_deref(),
+            Some([("客服".to_string()), ("VIP".to_string())].as_slice())
+        );
         assert_eq!(parsed[1].name, "引号\"账号");
         assert_eq!(parsed[1].fingerprint_guard, None, "空单元格应保持未设置");
+        assert_eq!(parsed[1].tags, None, "空标签列应保持未设置");
+    }
+
+    #[test]
+    fn csv_parse_tolerates_old_exports_without_tags_column() {
+        // 旧版导出只有 10 列；新解析靠 serde default 兜底，不应报错。
+        let text = "name,default_url,url_mode,incognito,proxy,user_agent,timezone,locale,fingerprint_guard,group\n账号A,https://a.com/,inherit,false,,,Asia/Shanghai,zh-CN,true,g1\n";
+        let parsed = parse_csv_accounts(text).expect("旧 CSV 应仍能导入");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "账号A");
+        assert_eq!(parsed[0].tags, None);
     }
 
     #[test]
@@ -994,6 +1062,140 @@ mod tests {
         assert!(sub.ends_with(&format!(".{}", rule.domain)));
     }
 
+    // ---- 标签与批量修改 ----
+
+    #[test]
+    fn normalize_tags_trims_dedupes_and_caps() {
+        let tags = normalize_tags(&[
+            "  VIP  ".to_string(),
+            "vip".to_string(),
+            String::new(),
+            "   ".to_string(),
+            "客服".to_string(),
+            "VIP".to_string(),
+        ]);
+        // 去空白 + 大小写不敏感去重 + 保序
+        assert_eq!(tags, vec!["VIP".to_string(), "客服".to_string()]);
+    }
+
+    #[test]
+    fn normalize_tags_caps_length_and_count() {
+        let long = "x".repeat(MAX_TAG_LEN + 10);
+        let tags = normalize_tags(&[long]);
+        assert_eq!(tags[0].len(), MAX_TAG_LEN, "超长标签应被截断");
+
+        let many: Vec<String> = (0..MAX_PROFILE_TAGS + 5).map(|i| format!("t{i}")).collect();
+        assert_eq!(
+            normalize_tags(&many).len(),
+            MAX_PROFILE_TAGS,
+            "标签数量应有上限"
+        );
+    }
+
+    #[test]
+    fn update_profile_batch_is_atomic_and_applies_patch() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        let seeded = seed_profiles(&handle, &["A", "B"]);
+        let first = seeded[0].clone();
+        let second = seeded[1].clone();
+
+        // ---- 整批成功 ----
+        let updated = update_profile_batch_impl(
+            &handle,
+            vec![first.clone(), second.clone()],
+            ProfileBatchPatch {
+                url_mode: Some("custom".to_string()),
+                default_url: Some("https://example.com/".to_string()),
+                tags_add: Some(vec!["VIP".to_string(), "vip".to_string()]),
+                favorite: Some(true),
+                ..Default::default()
+            },
+        )
+        .expect("批量修改应成功");
+        assert_eq!(updated.len(), 2);
+        let reloaded = load_profiles(&handle).expect("重新读取失败");
+        for id in [&first, &second] {
+            let profile = reloaded.iter().find(|p| &p.id == id).expect("账号应存在");
+            assert_eq!(profile.url_mode, "custom");
+            assert_eq!(profile.default_url, "https://example.com/");
+            // 追加两个同名（大小写不同）标签应只留一个
+            assert_eq!(profile.tags, vec!["VIP".to_string()]);
+            assert!(profile.favorite);
+            assert_eq!(profile.last_url, "https://example.com/");
+        }
+
+        // ---- 非法输入：整批不改 ----
+        let before = load_profiles(&handle).expect("读取失败");
+        let err = update_profile_batch_impl(
+            &handle,
+            vec![first.clone(), second.clone()],
+            ProfileBatchPatch {
+                url_mode: Some("bogus".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect_err("非法 url_mode 应报错");
+        assert!(err.contains("网址模式不合法"));
+        let after = load_profiles(&handle).expect("读取失败");
+        assert_eq!(
+            before
+                .iter()
+                .map(|p| p.url_mode.as_str())
+                .collect::<Vec<_>>(),
+            after
+                .iter()
+                .map(|p| p.url_mode.as_str())
+                .collect::<Vec<_>>(),
+            "校验失败时不应改动任何账号"
+        );
+
+        // ---- 部分 id 不存在：同样整批不改 ----
+        let before = load_profiles(&handle).expect("读取失败");
+        assert!(
+            update_profile_batch_impl(
+                &handle,
+                vec![first.clone(), "missing".to_string()],
+                ProfileBatchPatch {
+                    favorite: Some(false),
+                    ..Default::default()
+                },
+            )
+            .is_err(),
+            "含不存在的 id 应整批失败"
+        );
+        let after = load_profiles(&handle).expect("读取失败");
+        assert_eq!(
+            before.iter().map(|p| p.favorite).collect::<Vec<_>>(),
+            after.iter().map(|p| p.favorite).collect::<Vec<_>>()
+        );
+
+        // ---- 删除标签 / 清空标签 ----
+        update_profile_batch_impl(
+            &handle,
+            vec![first.clone()],
+            ProfileBatchPatch {
+                tags_remove: Some(vec!["vip".to_string()]),
+                ..Default::default()
+            },
+        )
+        .expect("删除标签应成功");
+        let reloaded = load_profiles(&handle).expect("读取失败");
+        let profile = reloaded.iter().find(|p| p.id == first).expect("账号应存在");
+        assert!(profile.tags.is_empty(), "大小写不敏感删除");
+    }
+
+    #[test]
+    fn tags_survive_json_roundtrip_on_profile() {
+        // 历史数据没有 tags 字段：靠 serde default 兜底，不应反序列化失败。
+        let json = r#"{"id":"p1","name":"A","note":"","created_at":"2026-01-01T00:00:00Z","order":0,"incognito":false}"#;
+        let profile: Profile = serde_json::from_str(json).expect("缺字段应走 serde default");
+        assert!(profile.tags.is_empty());
+        assert!(!profile.favorite);
+        assert!(profile.last_used_at.is_none());
+    }
+
     // ---- 诊断：错误码分类 ----
 
     #[test]
@@ -1115,29 +1317,49 @@ mod tests {
             .expect("mock app 构造失败")
     }
 
+    /// 往 store 里放若干已有账号，用于测试冲突 / 批量逻辑。返回它们的 id。
+    ///
+    /// 注意 `save_profiles` 是**整表覆盖**，所以多个账号必须一次性写完，
+    /// 不能循环调用 —— 后一次会把前一次的结果抹掉。
+    fn seed_profiles(
+        handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+        names: &[&str],
+    ) -> Vec<String> {
+        let profiles: Vec<Profile> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| Profile {
+                id: format!("seed-{name}"),
+                name: name.to_string(),
+                note: String::new(),
+                avatar: None,
+                default_url: DEFAULT_PROFILE_URL.to_string(),
+                url_mode: "inherit".to_string(),
+                last_url: DEFAULT_PROFILE_URL.to_string(),
+                created_at: "2026-01-01T00:00:00+00:00".to_string(),
+                order: index,
+                incognito: false,
+                proxy: String::new(),
+                user_agent: String::new(),
+                timezone: String::new(),
+                locale: String::new(),
+                fingerprint_guard: true,
+                group: String::new(),
+                tags: Vec::new(),
+                favorite: false,
+                last_used_at: None,
+            })
+            .collect();
+        let ids = profiles.iter().map(|p| p.id.clone()).collect();
+        save_profiles(handle, &profiles).expect("预置账号失败");
+        ids
+    }
+
     /// 往 store 里放一个已有账号，用于测试导入时的冲突处理。返回其 id。
     fn seed_profile(handle: &tauri::AppHandle<tauri::test::MockRuntime>, name: &str) -> String {
-        let profile = Profile {
-            id: format!("seed-{name}"),
-            name: name.to_string(),
-            note: String::new(),
-            avatar: None,
-            default_url: DEFAULT_PROFILE_URL.to_string(),
-            url_mode: "inherit".to_string(),
-            last_url: DEFAULT_PROFILE_URL.to_string(),
-            created_at: "2026-01-01T00:00:00+00:00".to_string(),
-            order: 0,
-            incognito: false,
-            proxy: String::new(),
-            user_agent: String::new(),
-            timezone: String::new(),
-            locale: String::new(),
-            fingerprint_guard: true,
-            group: String::new(),
-        };
-        let id = profile.id.clone();
-        save_profiles(handle, std::slice::from_ref(&profile)).expect("预置账号失败");
-        id
+        seed_profiles(handle, &[name])
+            .pop()
+            .expect("预置账号应返回 id")
     }
 
     /// 把 store 清成「全新安装」状态。

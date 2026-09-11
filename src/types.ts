@@ -22,6 +22,12 @@ export interface Profile {
   fingerprint_guard: boolean
   /** 账号分组，空表示未分组 */
   group: string
+  /** 自由标签，用于跨分组归类 */
+  tags: string[]
+  /** 收藏 */
+  favorite: boolean
+  /** 最近一次被打开的时间（RFC3339），没打开过为 null */
+  last_used_at: string | null
 }
 
 export interface BrowserBounds {
@@ -43,6 +49,22 @@ export interface ProfileIsolationSettings {
   locale: string
   fingerprintGuard: boolean
   group: string
+  /** 自由标签；Rust 侧会 trim / 去重 / 限长 */
+  tags: string[]
+}
+
+/** 侧边栏的视图筛选 */
+export type ProfileViewMode = 'all' | 'favorite' | 'recent'
+
+/** `update_profile_batch` 的补丁；全是可选，省略即"不改" */
+export interface ProfileBatchPatch {
+  url_mode?: 'inherit' | 'custom'
+  default_url?: string
+  tags_add?: string[]
+  tags_remove?: string[]
+  tags_set?: string[]
+  favorite?: boolean
+  group?: string
 }
 
 /** 从账号页面（chat01.ai）抓到的状态：积分、登录账号名、邮箱、代理出口 */

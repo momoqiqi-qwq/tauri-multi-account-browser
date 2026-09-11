@@ -15,9 +15,13 @@ import {
   Connection,
   Promotion,
   Tools,
+  Star,
+  StarFilled,
+  Operation,
 } from '@element-plus/icons-vue'
+import ProfileBatchBar from './ProfileBatchBar.vue'
 import { acquireWebviewSuppression } from '../lib/suppress'
-import type { Profile } from '../types'
+import type { Profile, ProfileBatchPatch, ProfileViewMode } from '../types'
 
 const props = defineProps<{
   profiles: Profile[]
@@ -26,6 +30,12 @@ const props = defineProps<{
   openTabs: string[]
   collapsed: boolean
   search: string
+  /** 侧边栏视图模式（全部 / 收藏 / 最近使用） */
+  viewMode: ProfileViewMode
+  /** 当前选中的标签，null 表示不按标签过滤 */
+  activeTag: string | null
+  /** 所有账号上出现过的标签，用于标签筛选条 */
+  allTags: string[]
 }>()
 
 const emit = defineEmits<{
@@ -40,13 +50,57 @@ const emit = defineEmits<{
   toggle: []
   clone: [profile: Profile]
   testProxy: [profile: Profile]
+  toggleFavorite: [profile: Profile]
+  batch: [ids: string[], patch: ProfileBatchPatch]
   'update:search': [value: string]
+  'update:viewMode': [value: ProfileViewMode]
+  'update:activeTag': [value: string | null]
 }>()
 
 const searchModel = computed({
   get: () => props.search,
   set: (value: string) => emit('update:search', value),
 })
+
+const viewModel = computed({
+  get: () => props.viewMode,
+  set: (value: ProfileViewMode) => emit('update:viewMode', value),
+})
+
+function toggleTag(tag: string) {
+  emit('update:activeTag', props.activeTag === tag ? null : tag)
+}
+
+// ---- 批量选择 ----
+const selectMode = ref(false)
+const selected = ref<string[]>([])
+const batchBusy = ref(false)
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  selected.value = []
+}
+function isSelected(id: string) {
+  return selected.value.includes(id)
+}
+function toggleSelected(id: string) {
+  selected.value = isSelected(id)
+    ? selected.value.filter((item) => item !== id)
+    : [...selected.value, id]
+}
+function selectVisible() {
+  selected.value = props.profiles.map((p) => p.id)
+}
+function applyBatch(patch: ProfileBatchPatch) {
+  if (!selected.value.length) return
+  batchBusy.value = true
+  const ids = [...selected.value]
+  // 清空选择但保留选择模式，方便连着做下一个批量操作。
+  // 失败时父组件会提示，Rust 侧是原子提交，不存在改了一半的情况。
+  selected.value = []
+  emit('batch', ids, patch)
+  batchBusy.value = false
+}
 
 let releaseMenu: (() => void) | null = null
 function onMenuVisible(open: boolean) {
@@ -157,9 +211,16 @@ function onGroupDrop(targetName: string) {
   emit('reorder', ids)
 }
 
+/** 搜索 / 收藏 / 最近 / 标签筛选下都摊平成一个列表：
+ *  此时账号已不按完整顺序出现，按分组折叠会让人误以为"某些账号消失了"。 */
+const flattened = computed(
+  () =>
+    !!props.search.trim() || props.viewMode !== 'all' || !!props.activeTag,
+)
+
 /** 按账号顺序形成分组；分组顺序也跟随账号顺序，因此可通过拖拽整个分组调整。 */
 const groups = computed(() => {
-  if (props.search.trim()) return [{ name: '', items: props.profiles }]
+  if (flattened.value) return [{ name: '', items: props.profiles }]
   const buckets: { name: string; items: Profile[] }[] = []
   for (const profile of props.profiles) {
     const name = profile.group || ''
@@ -243,10 +304,44 @@ function iconFor(profile: Profile): string | null {
 
       <el-input v-model="searchModel" class="sidebar-search" size="small" placeholder="搜索账号 / 分组" :prefix-icon="Search" clearable />
 
+      <div class="view-filter">
+        <el-radio-group v-model="viewModel" size="small">
+          <el-radio-button value="all">全部</el-radio-button>
+          <el-radio-button value="favorite">收藏</el-radio-button>
+          <el-radio-button value="recent">最近</el-radio-button>
+        </el-radio-group>
+        <el-button
+          size="small"
+          :type="selectMode ? 'primary' : 'default'"
+          :icon="Operation"
+          title="批量选择账号"
+          @click="toggleSelectMode"
+        >
+          批量
+        </el-button>
+      </div>
+
+      <div v-if="allTags.length" class="tag-filter">
+        <el-tag
+          v-for="tag in allTags"
+          :key="tag"
+          size="small"
+          :effect="activeTag === tag ? 'dark' : 'plain'"
+          class="tag-chip"
+          @click="toggleTag(tag)"
+        >
+          {{ tag }}
+        </el-tag>
+      </div>
+
+      <div v-if="selectMode" class="select-hint">
+        <el-button link type="primary" size="small" @click="selectVisible">全选当前列表（{{ profiles.length }}）</el-button>
+      </div>
+
       <div class="profile-list">
         <template v-for="group in groups" :key="group.name">
           <div
-            v-if="!search.trim()"
+            v-if="!flattened"
             class="group-header"
             :class="{ collapsed: isGroupCollapsed(group.name), 'drag-over': dragOverGroup === group.name }"
             draggable="true"
@@ -262,7 +357,7 @@ function iconFor(profile: Profile): string | null {
             <small>{{ group.items.length }}</small>
           </div>
 
-          <template v-if="search.trim() || !isGroupCollapsed(group.name)">
+          <template v-if="flattened || !isGroupCollapsed(group.name)">
             <el-dropdown
               v-for="profile in group.items"
               :key="profile.id"
@@ -273,13 +368,20 @@ function iconFor(profile: Profile): string | null {
               <div
                 class="profile-card"
                 :class="{ active: profile.id === activeId }"
-                :draggable="!search.trim()"
+                :draggable="!flattened"
                 @dragstart="onProfileDragStart($event, profile.id)"
                 @dragend="onProfileDragEnd"
                 @dragover.prevent
                 @drop.prevent="onProfileDrop(profile)"
-                @click="emit('activate', profile.id)"
+                @click="selectMode ? toggleSelected(profile.id) : emit('activate', profile.id)"
               >
+                <el-checkbox
+                  v-if="selectMode"
+                  class="profile-check"
+                  :model-value="isSelected(profile.id)"
+                  @click.stop
+                  @change="toggleSelected(profile.id)"
+                />
                 <div class="avatar" :title="profile.default_url">
                   <img v-if="iconFor(profile)" class="avatar-icon" :src="iconFor(profile) ?? ''" :alt="profile.name" />
                   <span v-else>{{ profile.name.slice(0, 1).toUpperCase() }}</span>
@@ -290,7 +392,19 @@ function iconFor(profile: Profile): string | null {
                     <i class="status-dot" :class="{ live: openTabs.includes(profile.id) }" :title="openTabs.includes(profile.id) ? '已作为标签页打开' : '未打开'" />
                   </div>
                   <small>{{ isolationSummary(profile) }}</small>
+                  <div v-if="profile.tags?.length" class="profile-tags">
+                    <el-tag v-for="tag in profile.tags" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+                  </div>
                 </div>
+                <el-button
+                  text
+                  circle
+                  class="fav-btn"
+                  :icon="profile.favorite ? StarFilled : Star"
+                  :class="{ on: profile.favorite }"
+                  :title="profile.favorite ? '取消收藏' : '收藏'"
+                  @click.stop="emit('toggleFavorite', profile)"
+                />
                 <el-dropdown trigger="click" @click.stop @visible-change="onMenuVisible">
                   <el-button text circle :icon="MoreFilled" @click.stop />
                   <template #dropdown>
@@ -320,6 +434,15 @@ function iconFor(profile: Profile): string | null {
         <div v-if="profiles.length === 0" class="list-empty">没有匹配的账号</div>
       </div>
 
+      <ProfileBatchBar
+        v-if="selectMode"
+        :selected="selected"
+        :known-tags="allTags"
+        :busy="batchBusy"
+        @apply="applyBatch"
+        @clear="selected = []"
+      />
+
       <el-button class="new-profile" type="primary" :icon="Plus" @click="emit('openCreate')">新建账号</el-button>
     </template>
 
@@ -328,3 +451,45 @@ function iconFor(profile: Profile): string | null {
     </button>
   </aside>
 </template>
+
+<style scoped>
+.view-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+.tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 2px 8px;
+}
+.tag-chip {
+  cursor: pointer;
+  user-select: none;
+}
+.select-hint {
+  padding: 0 2px 6px;
+}
+.profile-check {
+  margin-right: 2px;
+}
+.profile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+}
+.fav-btn {
+  opacity: 0.45;
+}
+.fav-btn.on,
+.profile-card:hover .fav-btn {
+  opacity: 1;
+}
+.fav-btn.on {
+  color: var(--el-color-warning);
+}
+</style>

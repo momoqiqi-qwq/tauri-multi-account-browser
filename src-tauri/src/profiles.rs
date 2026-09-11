@@ -1,8 +1,12 @@
 //! 账号 CRUD 命令与账号模板。
 
 use chrono::Utc;
-use std::{collections::HashMap, fs, time::Duration};
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    time::Duration,
+};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use uuid::Uuid;
 
@@ -44,6 +48,7 @@ pub(crate) fn create_profile(
     locale: Option<String>,
     fingerprint_guard: Option<bool>,
     group: Option<String>,
+    tags: Option<Vec<String>>,
 ) -> Result<Profile, String> {
     let mut profiles = load_profiles(&app)?;
     let draft = ProfileDraft {
@@ -57,11 +62,110 @@ pub(crate) fn create_profile(
         locale,
         fingerprint_guard,
         group,
+        tags,
     };
     let profile = build_profile(&app, draft, profiles.len())?;
     profiles.push(profile.clone());
     save_profiles(&app, &profiles)?;
     Ok(profile)
+}
+
+/// 批量修改：先整体校验，全部通过后才写盘。
+///
+/// 与 `create_profiles_bulk` 同一个原则（见 CHANGES_V16）：不要用前端循环
+/// `update_profile`，第 N 个失败时会留下前 N-1 个已改、后面没改的半截状态。
+#[tauri::command]
+pub(crate) fn update_profile_batch(
+    app: AppHandle,
+    ids: Vec<String>,
+    patch: ProfileBatchPatch,
+) -> Result<Vec<Profile>, String> {
+    update_profile_batch_impl(&app, ids, patch)
+}
+
+pub(crate) fn update_profile_batch_impl<R: Runtime>(
+    app: &AppHandle<R>,
+    ids: Vec<String>,
+    patch: ProfileBatchPatch,
+) -> Result<Vec<Profile>, String> {
+    if ids.is_empty() {
+        return Err("没有选中任何账号".to_string());
+    }
+    if ids.len() > MAX_BULK_PROFILES {
+        return Err(format!("单次最多修改 {MAX_BULK_PROFILES} 个账号"));
+    }
+
+    // ---- 校验阶段：任何一项不合法就整批不改 ----
+    let mode = match patch.url_mode.as_deref() {
+        None => None,
+        Some("inherit") => Some("inherit".to_string()),
+        Some("custom") => Some("custom".to_string()),
+        Some(other) => return Err(format!("网址模式不合法：{other}")),
+    };
+    let default_url = match patch.default_url.as_deref() {
+        None => None,
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(normalize_url(value)?.to_string()),
+    };
+    let group = patch.group.as_ref().map(|value| value.trim().to_string());
+
+    // ---- 应用阶段 ----
+    let mut profiles = load_profiles(&app)?;
+    let mut updated = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let index = profiles
+            .iter()
+            .position(|p| p.id == *id)
+            .ok_or_else(|| format!("账号不存在：{id}"))?;
+        let profile = &mut profiles[index];
+
+        let previous_default = profile.default_url.clone();
+        if let Some(ref mode) = mode {
+            profile.url_mode = mode.clone();
+        }
+        if let Some(ref url) = default_url {
+            profile.default_url = url.clone();
+        } else if mode.as_deref() == Some("inherit") {
+            // 切成继承模式但没给新网址：以全局主页为准，而不是留着旧的 custom 值。
+            profile.default_url = normalized_global_default_url(&app).to_string();
+        }
+        if mode.is_some() || default_url.is_some() {
+            // 还停在旧主页（或没有 last_url）的账号同步到新主页，避免下次打开还是老地址。
+            if profile.last_url.trim().is_empty() || profile.last_url == previous_default {
+                profile.last_url = profile.default_url.clone();
+            }
+        }
+
+        if let Some(ref set) = patch.tags_set {
+            profile.tags = normalize_tags(set);
+        }
+        if let Some(ref add) = patch.tags_add {
+            let mut merged = profile.tags.clone();
+            merged.extend(add.iter().cloned());
+            profile.tags = normalize_tags(&merged);
+        }
+        if let Some(ref remove) = patch.tags_remove {
+            let dropping: HashSet<String> = remove
+                .iter()
+                .map(|tag| tag.trim().to_lowercase())
+                .filter(|tag| !tag.is_empty())
+                .collect();
+            profile
+                .tags
+                .retain(|tag| !dropping.contains(&tag.to_lowercase()));
+        }
+        if let Some(value) = patch.favorite {
+            profile.favorite = value;
+        }
+        if let Some(ref value) = group {
+            profile.group = value.clone();
+        }
+
+        updated.push(profile.clone());
+    }
+
+    save_profiles(&app, &profiles)?;
+    Ok(updated)
 }
 
 /// 批量创建：先整体校验，全部通过后才写盘。
@@ -106,6 +210,7 @@ pub(crate) async fn update_profile(
     locale: Option<String>,
     fingerprint_guard: Option<bool>,
     group: Option<String>,
+    tags: Option<Vec<String>>,
 ) -> Result<UpdateProfileResult, String> {
     let mut profiles = load_profiles(&app)?;
     let index = profiles
@@ -193,6 +298,10 @@ pub(crate) async fn update_profile(
             isolation_changed = true;
         }
     }
+    if let Some(value) = tags {
+        // 标签只是展示属性，不影响隔离，改动即时生效。
+        profile.tags = normalize_tags(&value);
+    }
 
     let updated = profile.clone();
     save_profiles(&app, &profiles)?;
@@ -261,13 +370,20 @@ pub(crate) async fn activate_profile(
     id: String,
     bounds: BrowserBounds,
 ) -> Result<(), String> {
-    let profiles = load_profiles(&app)?;
+    let mut profiles = load_profiles(&app)?;
     let profile = profiles
         .iter()
         .find(|p| p.id == id)
         .ok_or_else(|| "账号不存在".to_string())?
         .clone();
     let label = profile_label(&id);
+
+    // 记录"最近使用"。切标签是人工操作，频率不高，直接落盘；
+    // 前端也会乐观更新自己的副本（见 useTabs.activate），两边保持同一口径。
+    if let Some(target) = profiles.iter_mut().find(|p| p.id == id) {
+        target.last_used_at = Some(Utc::now().to_rfc3339());
+        save_profiles(&app, &profiles)?;
+    }
 
     // Tauri 文档特别提醒 Windows 上从同步 command 创建 WebView 可能死锁，
     // 所以这个命令必须保持 async。

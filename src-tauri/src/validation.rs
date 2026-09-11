@@ -8,6 +8,31 @@ use uuid::Uuid;
 
 use crate::*;
 
+/// 规范化标签列表：去空白、丢空串、去重（大小写不敏感）、限制单个长度与总个数。
+///
+/// 保留首次出现的顺序，这样"已有的标签不会因为再次输入而跳位置"。
+/// 去重用小写比较但保留原样大小写 —— 用户写 VIP 就显示 VIP。
+pub(crate) fn normalize_tags(raw: &[String]) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut tags: Vec<String> = Vec::new();
+    for item in raw {
+        let tag: String = item.trim().chars().take(MAX_TAG_LEN).collect();
+        if tag.is_empty() {
+            continue;
+        }
+        let key = tag.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.insert(key);
+        tags.push(tag);
+        if tags.len() >= MAX_PROFILE_TAGS {
+            break;
+        }
+    }
+    tags
+}
+
 pub(crate) fn normalized_download_url(url: &Url) -> String {
     let mut clean = url.clone();
     clean.set_fragment(None);
@@ -252,6 +277,16 @@ pub(crate) fn parse_csv_accounts(text: &str) -> Result<Vec<ProfileDraft>, String
                 Some(parse_bool_cell(&row.fingerprint_guard))
             },
             group: Some(row.group),
+            tags: if row.tags.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    row.tags
+                        .split(CSV_TAG_SEPARATOR)
+                        .map(|item| item.to_string())
+                        .collect(),
+                )
+            },
         });
     }
     Ok(drafts)
@@ -278,6 +313,11 @@ pub(crate) fn build_csv_accounts(drafts: &[ProfileDraft]) -> Result<String, Stri
                     None => "",
                 },
                 draft.group.as_deref().unwrap_or(""),
+                &draft
+                    .tags
+                    .as_ref()
+                    .map(|tags| tags.join(&CSV_TAG_SEPARATOR.to_string()))
+                    .unwrap_or_default(),
             ])
             .map_err(|e| e.to_string())?;
     }
@@ -343,5 +383,8 @@ pub(crate) fn build_profile<R: Runtime>(
         locale,
         fingerprint_guard: draft.fingerprint_guard.unwrap_or(true),
         group: draft.group.unwrap_or_default().trim().to_string(),
+        tags: normalize_tags(&draft.tags.unwrap_or_default()),
+        favorite: false,
+        last_used_at: None,
     })
 }

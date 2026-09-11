@@ -184,6 +184,10 @@ export function useTabs(deps: TabsDeps): TabsApi {
       hibernated.value = hibernated.value.filter((tab) => tab !== id)
       lastActiveAt.value = { ...lastActiveAt.value, [id]: Date.now() }
       activeId.value = id
+      // 与 Rust 侧 activate_profile 同步维护"最近使用"。
+      // 后端已落盘，这里只是让侧边栏的「最近使用」立刻反映，省一次列表往返。
+      const touched = profiles.value.find((p) => p.id === id)
+      if (touched) touched.last_used_at = new Date().toISOString()
       currentUrl.value = resolveProfileUrl({
         ...profile,
         default_url:

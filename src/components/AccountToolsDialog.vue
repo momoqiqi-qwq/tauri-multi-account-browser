@@ -147,6 +147,7 @@ function profilesToDrafts() {
     locale: p.locale || '',
     fingerprint_guard: p.fingerprint_guard !== false,
     group: p.group || '',
+    tags: [...(p.tags ?? [])],
   }))
 }
 
