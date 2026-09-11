@@ -1,0 +1,38 @@
+[package]
+name = "tauri-multi-account-browser"
+version = "0.6.0"
+description = "Tauri 2 multi-account browser shell"
+authors = ["OpenAI"]
+edition = "2021"
+
+[lib]
+name = "tauri_multi_account_browser_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tokio = { version = "1", features = ["time"] }
+tauri-plugin-store = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+base64 = "0.22"
+
+[dev-dependencies]
+# 用于在单元测试里构造带 store 插件的 mock App，验证 schema 迁移行为。
+tauri = { version = "2", features = ["unstable", "test"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+incremental = false
+panic = "abort"
+opt-level = "s"
+strip = true
+

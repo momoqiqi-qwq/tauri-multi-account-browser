@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    Windows 上有两份 comctl32：
+      - System32\comctl32.dll（v5.82）—— 不导出 TaskDialogIndirect
+      - WinSxS 的 Microsoft.Windows.Common-Controls v6 —— 才导出它
+
+    开发 tauri 的 `test` feature 后，测试二进制会链入 tray-icon/muda，从而依赖
+    TaskDialogIndirect。没有这份 manifest，加载器会绑定到 v5.82，进程启动即失败：
+      STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)
+
+    正式 app 由 tauri-build 注入同样内容的 manifest，因此**只有测试目标**需要它。
+    见 scripts/cargo-test.sh。
+  -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

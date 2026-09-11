@@ -1,0 +1,32 @@
+
+> tauri-multi-account-browser@0.1.0 tauri:build
+> tauri build --no-bundle
+
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `npm run build`
+
+> tauri-multi-account-browser@0.1.0 build
+> vue-tsc --noEmit && vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 1617 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     0.41 kB │ gzip:   0.28 kB
+dist/assets/index-BdVNNb_L.css    371.16 kB │ gzip:  50.43 kB
+dist/assets/index-BGQsNrlm.js   1,042.62 kB │ gzip: 341.48 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 4.68s
+   Compiling tauri-multi-account-browser v0.1.0 (E:\E-Develop-Project\tauri-multi-account-browser\src-tauri)
+warning: linker stdout: 正在创建库 E:\E-Develop-Project\tauri-multi-account-browser\src-tauri\target\release\deps\tauri_multi_account_browser_lib.dll.lib 和对象 E:\E-Develop-Project\tauri-multi-account-browser\src-tauri\target\release\deps\tauri_multi_account_browser_lib.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `tauri-multi-account-browser` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1m 50s
+       Built application at: E:\E-Develop-Project\tauri-multi-account-browser\src-tauri\target\release\tauri-multi-account-browser.exe
