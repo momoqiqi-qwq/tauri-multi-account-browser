@@ -2,7 +2,7 @@
 
 use chrono::Utc;
 use std::{collections::HashMap, sync::Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::*;
@@ -85,7 +85,7 @@ pub(crate) fn clean_status(mut status: ProfileStatus) -> ProfileStatus {
     status
 }
 
-pub(crate) fn save_profile_status(app: &AppHandle, id: &str, mut status: ProfileStatus) {
+pub(crate) fn save_profile_status<R: Runtime>(app: &AppHandle<R>, id: &str, mut status: ProfileStatus) {
     if let Ok(store) = app.store(STORE_FILE) {
         let mut map: HashMap<String, ProfileStatus> = match store.get(STATUS_KEY) {
             Some(value) => serde_json::from_value(value).unwrap_or_default(),
@@ -144,7 +144,7 @@ pub(crate) fn save_profile_status(app: &AppHandle, id: &str, mut status: Profile
 ///
 /// 注意：只清 `answer_ready`（未读提醒），**保留** `answer_finished_at`——
 /// 它现在表示「最近一次 AI 完成回答的时间」，要持久用于侧边栏展示。
-pub(crate) fn clear_profile_answer_ready(app: &AppHandle, id: &str) {
+pub(crate) fn clear_profile_answer_ready<R: Runtime>(app: &AppHandle<R>, id: &str) {
     if let Ok(store) = app.store(STORE_FILE) {
         let mut map: HashMap<String, ProfileStatus> = store
             .get(STATUS_KEY)

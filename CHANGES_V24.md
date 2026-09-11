@@ -110,6 +110,20 @@ npm run verify:assets         css / js / html 三项逐字节一致
 没有为新行为加 Rust 单测 —— `save_profile_status` 需要 `AppHandle` + webview emit，
 测起来比较重；前端展示和自动刷新都是 UI 层，肉眼确认更直接。
 
+### 补记：v24 核心逻辑已加单元测试
+
+把 `save_profile_status` 与 `clear_profile_answer_ready` 按项目既定套路泛化成
+`<R: Runtime>`（见 `MEMORY.md` 坑 6），用 `MockRuntime` 直接覆盖「持久化」这条主路径：
+
+- `answer_finished_at_is_set_on_first_ready_report`：首次 `ready=true` 应记下时间。
+- `clear_profile_answer_ready_preserves_finished_at`：已读不应清掉时间戳。
+- `answer_finished_at_does_not_drift_on_repeated_ready`：连续两次 `ready=true`（间隔
+  几毫秒保证时间戳本身已经变化）时间戳应保持不变，验证边沿检测。
+- `answer_finished_at_updates_on_subsequent_ready_edge`：ready → generating → ready
+  这条往返路径下，新一次「刚刚答完」应覆盖为新时间。
+
+加上旧有 43 个，共 **47 个测试**全过。
+
 ## 8. 新增/修改文件
 
 | 文件 | 说明 |

@@ -1547,4 +1547,109 @@ mod tests {
             "拒绝迁移时不应改动版本号"
         );
     }
+
+    // ---- answer_finished_at 持久化（v24） ----
+
+    fn load_status(
+        handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+        id: &str,
+    ) -> Option<ProfileStatus> {
+        let store = handle.store(STORE_FILE).expect("store 打开失败");
+        let value = store.get(STATUS_KEY)?;
+        let map: std::collections::HashMap<String, ProfileStatus> =
+            serde_json::from_value(value).ok()?;
+        map.get(id).cloned()
+    }
+
+    #[test]
+    fn answer_finished_at_is_set_on_first_ready_report() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: true, ..Default::default() },
+        );
+        let status = load_status(&handle, "A").expect("首次 ready 应写入状态");
+        assert!(status.answer_finished_at.is_some(), "首次 ready 应记下完成时间");
+    }
+
+    #[test]
+    fn clear_profile_answer_ready_preserves_finished_at() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: true, ..Default::default() },
+        );
+        let first = load_status(&handle, "A").unwrap().answer_finished_at;
+        assert!(first.is_some(), "前置：ready 后应有 finished_at");
+
+        clear_profile_answer_ready(&handle, "A");
+        let after = load_status(&handle, "A").expect("已读不应删除整条状态");
+        assert!(!after.answer_ready, "未读提醒应被清掉");
+        assert_eq!(after.answer_finished_at, first, "已读不应清掉 AI 使用时间");
+    }
+
+    #[test]
+    fn answer_finished_at_does_not_drift_on_repeated_ready() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: true, ..Default::default() },
+        );
+        let first = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
+
+        // 间隔几毫秒再报一次 ready=true，确保时间戳本身已经变了；
+        // 没做边沿检测的话 finished_at 会被刷成"新"时间。
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: true, ..Default::default() },
+        );
+        let second = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
+
+        assert_eq!(first, second, "连续两次 ready=true 不应把时间戳往后推");
+    }
+
+    #[test]
+    fn answer_finished_at_updates_on_subsequent_ready_edge() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: true, ..Default::default() },
+        );
+        let first = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
+
+        // AI 重新开始：生成中（ready=false, generating=true）。
+        // finished_at 应沿用旧的，不该被这次上报清掉。
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: false, answer_generating: true, ..Default::default() },
+        );
+        let during = load_status(&handle, "A").unwrap().answer_finished_at;
+        assert_eq!(during, Some(first.clone()), "生成中应沿用旧的完成时间");
+
+        // AI 又答完一次：ready=true 是新的边沿，应覆盖。
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus { answer_ready: true, ..Default::default() },
+        );
+        let second = load_status(&handle, "A").unwrap().answer_finished_at.unwrap();
+        assert_ne!(first, second, "新一轮「刚刚答完」应覆盖为新时间");
+    }
 }
