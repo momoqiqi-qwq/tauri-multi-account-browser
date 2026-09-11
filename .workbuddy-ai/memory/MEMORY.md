@@ -161,6 +161,17 @@ zip 里**不含** `scripts/cargo-msvc.sh`、`src-tauri/tests/`、`CHANGES_V15+`�
 顶层 import**（如 `StoreExt`）。测完必须再跑 `cargo check --lib --tests`，
 若报 `no method named store found` 之类，把该 import 挪进 `mod tests` 内部即可。
 
+### 13. 账号标签 / 收藏 / 最近使用（v22 起）
+- `Profile` 有 `tags: Vec<String>` / `favorite: bool` / `last_used_at: Option<String>`，
+  都带 serde default。`SCHEMA_VERSION` 已是 **2**。
+- `normalize_tags()` 在 validation.rs：trim / 丢空 / **大小写不敏感**去重（保留原样大小写）/
+  24 字符 / 12 个上限 / 保序。任何写 tags 的路径都要过它。
+- 批量改动走 `update_profile_batch(ids, patch)`（原子提交），**不要循环调 update_profile**。
+- **CSV 列只允许在末尾追加**：解析靠位置，缺 trailing 列由 serde default 兜底，
+  这样旧导出文件仍可导入。tags 列用 `|` 分隔（标签可能含逗号）。
+- 测试基建坑：`save_profiles` 是**整表覆盖**，`seed_profile()` 循环调用会互相抹掉，
+  要多个账号就用 `seed_profiles()` 一次性写入。
+
 ## 环境
 - VS 18 Community，MSVC 14.50.35717，Rust 1.98.0，Node 24.14.0 / 22.22.2。
 - 备份放 `.workbuddy-ai/backup/`，排除 node_modules / src-tauri/target / dist。
