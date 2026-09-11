@@ -47,27 +47,41 @@ for (const f of readdirSync(join('dist', 'assets'))) {
 }
 dist.html ??= readFileSync('dist/index.html')
 
+// 这个目录会**累积**历次构建的文件（文件名是内容 hash，不会互相覆盖），
+// 所以每一种类型只要有一个能对上 dist 就算通过，其余是历史残留。
 let failed = 0
+const byKind = new Map()
 for (const f of readdirSync(assetsDir)) {
   const kind = f.slice(f.lastIndexOf('.') + 1)
+  if (!byKind.has(kind)) byKind.set(kind, [])
+  byKind.get(kind).push(f)
+}
+
+for (const [kind, files] of byKind) {
   const expect = dist[kind]
   if (!expect) {
-    console.log('SKIP ' + f + '（dist 里没有同类文件，可能是历史残留）')
+    console.log('SKIP ' + kind + '（dist 里没有同类文件，历史残留 ' + files.length + ' 个）')
     continue
   }
-  let out
-  try {
-    out = brotliDecompressSync(readFileSync(join(assetsDir, f)))
-  } catch (e) {
-    console.log('MISS ' + f + ' 解压失败: ' + e.message)
-    failed++
-    continue
+  let matched = 0
+  let lastBytes = 0
+  for (const f of files) {
+    let out
+    try {
+      out = brotliDecompressSync(readFileSync(join(assetsDir, f)))
+    } catch {
+      continue
+    }
+    lastBytes = out.length
+    if (out.length === expect.length && out.equals(expect)) matched++
   }
-  const same = out.length === expect.length && out.equals(expect)
-  if (!same) failed++
+  const stale = files.length - matched
+  if (!matched) failed++
   console.log(
-    (same ? 'OK  ' : 'MISS') + ' ' + kind + '  解压后 ' + out.length + 'B  ' +
-      (same ? '与 dist 逐字节一致' : '与 dist 不一致')
+    (matched ? 'OK  ' : 'MISS') + ' ' + kind + '  解压后 ' +
+      (matched ? expect.length : lastBytes) + 'B  ' +
+      (matched ? '与 dist 逐字节一致' : '与 dist 不一致') +
+      (stale > 0 ? '（另有 ' + stale + ' 个历史残留）' : '')
   )
 }
 
