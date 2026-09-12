@@ -20,6 +20,8 @@
 
 一个基于 **Tauri 2.x + Rust + Vue 3 + TypeScript + Element Plus** 的多账户浏览器 Shell。它不保存用户名/密码，只保存账号元数据；登录态由每个 Profile 自己的 WebView Cookie / LocalStorage / IndexedDB / Cache 维护。
 
+![技术栈总览](docs/tech-stack.svg)
+
 > 这个 MVP 采用“一个 Tauri 主窗口 + 多个原生 child WebView”的结构，**顶部标签栏里一个标签页对应一个账号**。标签栏、左侧栏和地址栏由 Vue 渲染，网站内容由 Rust 动态创建的原生 WebView 渲染。切换标签页只是 `hide()/show()`，不会销毁 WebView，因此会保留页面状态、滚动位置和 JS 运行状态。
 
 ## 1. 技术结论先说清楚
