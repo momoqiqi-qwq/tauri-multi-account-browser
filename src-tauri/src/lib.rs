@@ -84,6 +84,12 @@ static ACTIVE_PROFILE_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 /// 从而不需要给远程页面开放任何 IPC 权限。
 const STATUS_SCHEME: &str = "mbstatus";
 
+/// 账号页要求「用独立小窗看这张图」用的假导航 scheme。
+/// 站点里的图片几乎都是 `<a target="_blank" href=".../x.png">`，注入脚本会摘掉
+/// target 让导航留在账号 WebView —— 结果整个聊天页被图片顶掉，用户丢会话。
+/// 改成回传 mbimage:// 由宿主另开小窗，账号页的网址一动不动。
+const IMAGE_SCHEME: &str = "mbimage";
+
 fn default_fingerprint_guard() -> bool {
     true
 }
@@ -1776,6 +1782,83 @@ mod tests {
                 .answer_finished_at
                 .is_some(),
             "对当前正在看的账号，generating 下降沿同样要记时间"
+        );
+    }
+
+    // ---- 图片预览小窗（v25） ----
+
+    /// 假导航的解析必须和注入脚本拼出来的完全对上：scheme / host / 编码后的图片地址。
+    #[test]
+    fn image_preview_navigation_decodes_target_and_hint() {
+        let target = "https://files.chat01.ai/a/b/c/图.png?sign=abc%2Bdef";
+        let encode = |s: &str| {
+            url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>()
+        };
+        let href = format!(
+            "{}://open?u={}&t={}",
+            IMAGE_SCHEME,
+            encode(target),
+            encode("上传的图片")
+        );
+
+        let url = url::Url::parse(&href).expect("假导航应能解析");
+        assert_eq!(url.scheme(), IMAGE_SCHEME);
+        assert_eq!(url.host_str(), Some("open"), "宿主靠 host=open 分流");
+
+        let query = query_map(&url);
+        assert_eq!(query.get("u").map(String::as_str), Some(target));
+        assert_eq!(query.get("t").map(String::as_str), Some("上传的图片"));
+    }
+
+    /// 小窗标题就是图片路径：path 段要可读（百分号解码），查询串要原样保留。
+    #[test]
+    fn image_window_title_shows_decoded_path_with_query() {
+        let title = image_window_title("https://files.chat01.ai/upload/%E5%9B%BE%E7%89%87.png?v=2", "");
+        assert_eq!(title, "https://files.chat01.ai/upload/图片.png?v=2");
+    }
+
+    /// blob: 没有可读路径，退回链接上的提示（alt / title）当标题。
+    #[test]
+    fn image_window_title_falls_back_to_hint_for_blob() {
+        assert_eq!(
+            image_window_title("blob:https://chat01.ai/x-y-z", ""),
+            "blob 预览图"
+        );
+        assert_eq!(
+            image_window_title("blob:https://chat01.ai/x-y-z", "  上传的图片  "),
+            "上传的图片"
+        );
+    }
+
+    /// 超长路径保留尾部：文件名和辨识度最高的段都在后面，截掉尾部等于没信息。
+    #[test]
+    fn clip_tail_keeps_the_tail_and_marks_truncation() {
+        assert_eq!(clip_tail("short", 10), "short");
+        let clipped = clip_tail(&"a".repeat(200), 10);
+        assert_eq!(clipped.chars().count(), 11, "省略号 + 10 个字符");
+        assert!(clipped.starts_with('…'));
+    }
+
+    /// 标题只做展示，百分号解码要能容错：非法序列、截断的 % 都不能 panic。
+    #[test]
+    fn percent_decode_handles_valid_and_broken_escapes() {
+        assert_eq!(percent_decode("%E5%9B%BE%20a.png"), "图 a.png");
+        assert_eq!(percent_decode("a%2Bb"), "a+b");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("bad%ZZtail"), "bad%ZZtail");
+        assert_eq!(percent_decode("中%41"), "中A");
+    }
+
+    /// 注入脚本和宿主必须对齐同一个假导航 scheme；改一边忘另一边就静默失效。
+    #[test]
+    fn image_preview_script_and_host_agree_on_contract() {
+        assert!(
+            NEW_WINDOW_PATCH_JS.contains(&format!("{IMAGE_SCHEME}://open")),
+            "点击拦截脚本要拼 {IMAGE_SCHEME}://open"
+        );
+        assert!(
+            IMAGE_PREVIEW_JS.contains("__MB_IMG_PATH__"),
+            "查看器脚本要留出路径占位符"
         );
     }
 }

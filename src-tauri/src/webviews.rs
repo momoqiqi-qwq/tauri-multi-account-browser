@@ -9,11 +9,14 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{
-    webview::{NewWindowResponse, WebviewBuilder},
+    webview::{NewWindowResponse, WebviewBuilder, WebviewWindowBuilder},
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl,
 };
 use url::Url;
@@ -421,12 +424,16 @@ const USER_AGENT_DATA_JS: &str = r#"
 })();
 "#;
 
-/// 新窗口 / blob 下载链接补丁：宿主会把 target=_blank 与 window.open 请求
-/// 重定向回当前页（见 on_new_window），但 blob:/data: 这类内存下载链接不能
+/// 新窗口 / blob 下载链接 / 图片预览补丁：宿主会把 target=_blank 与 window.open
+/// 请求重定向回当前页（见 on_new_window），但 blob:/data: 这类内存下载链接不能
 /// 整页导航（blob URL 无法跨上下文加载），这里在页面内提前接管：
 /// 摘掉 target 让锚点留在本页触发 WebView2 下载管理器，window.open(blob:)
 /// 则合成一个带 download 属性的锚点点击完成下载。
-const NEW_WINDOW_PATCH_JS: &str = r#"
+///
+/// 图片另走一路：站点里的图片普遍是 `<a target="_blank" href=".../x.png">`，
+/// 按上面那条规则摘掉 target 后，整个账号页会被图片顶掉（用户丢掉当前会话）。
+/// 这里识别出图片链接后不改导航，而是回传 mbimage:// 假导航，由宿主另开小窗。
+pub(crate) const NEW_WINDOW_PATCH_JS: &str = r#"
 (function () {
   if (window.__mbNewTabInstalled) return;
   try { Object.defineProperty(window, '__mbNewTabInstalled', { value: true }); } catch (e) { return; }
@@ -445,15 +452,84 @@ const NEW_WINDOW_PATCH_JS: &str = r#"
     } catch (e) { return false; }
   }
 
+  // 图片地址识别：blob: 一定是（上传后的本地预览），其余看扩展名。
+  // 不用「链接里包着 img 就算图片」这种宽口径 —— 卡片列表的缩略图也是这个结构，
+  // 宽口径会把「点缩略图进详情页」也变成弹小窗，那是误伤。
+  var IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico|heic|heif|jfif|tiff?)$/i;
+  function isImageUrl(u) {
+    try {
+      var raw = String(u == null ? '' : u).trim();
+      if (!raw) return false;
+      if (/^blob:/i.test(raw)) return true;
+      if (!/^(?:https?:)?\/\//i.test(raw)) return false;
+      return IMAGE_EXT_RE.test(raw.split('#')[0].split('?')[0]);
+    } catch (e) { return false; }
+  }
+
+  function absoluteUrl(url) {
+    try { return new URL(String(url), location.href).href; } catch (e) { return String(url || ''); }
+  }
+
+  // 请求宿主另开小窗显示图片。宿主在 on_navigation 里取消这次假导航，页面本身不跳转。
+  function previewImage(url, label) {
+    try {
+      var u = absoluteUrl(url);
+      if (!u) return false;
+      location.href = 'mbimage://open?u=' + encodeURIComponent(u)
+        + '&t=' + encodeURIComponent(String(label || '').slice(0, 120));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function nearestImage(node) {
+    try {
+      var n = node;
+      while (n && n.nodeType === 1) {
+        if (n.tagName === 'IMG') return n;
+        if (n.tagName === 'A') return n.querySelector ? n.querySelector('img') : null;
+        n = n.parentElement;
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  function placeholderHref(href) {
+    var h = String(href || '').trim().toLowerCase();
+    return h === '' || h === '#' || h.indexOf('javascript:') === 0;
+  }
+
+  function imgLabel(img) {
+    try { return String(img.getAttribute('alt') || img.getAttribute('title') || ''); } catch (e) { return ''; }
+  }
+
   // WebView2 的新窗口请求会被宿主拒绝。对于用户点击的链接，直接摘掉
   // target=_blank，让请求留在当前账号 WebView 中；这样服务端返回
   // Content-Disposition: attachment 时才能进入 on_download，而不是先变成 popup。
+  // 图片链接例外：改成开预览小窗，账号页保持原样。
   document.addEventListener('click', function (e) {
     try {
       if (e.defaultPrevented || e.button !== 0) return;
+      // 只接管真人点击。站点和宿主自己的自动下载都靠 element.click() 触发，
+      // 那种合成事件的 isTrusted 是 false —— 如果也拦成预览小窗，
+      // 「AI 文件自动下载」遇到图片白名单就会被整条打断。
+      if (!e.isTrusted) return;
       var el = e.target;
       while (el && el.tagName !== 'A') el = el.parentElement;
       if (!el) return;
+      if (!el.hasAttribute('download')) {
+        var img = nearestImage(e.target);
+        var href = el.getAttribute('href') || '';
+        // 先补成绝对地址再判断：站点里相对路径的图片链接（/files/x.png）同样常见。
+        var absolute = href ? absoluteUrl(href) : '';
+        if (isImageUrl(absolute)) {
+          var label = String(el.getAttribute('title') || el.getAttribute('aria-label') || '') || imgLabel(img);
+          if (previewImage(absolute, label)) { e.preventDefault(); e.stopPropagation(); return; }
+        } else if (img && placeholderHref(href)) {
+          // 链接没有真地址、只包着图片（站点自己用 JS 处理点击）：图片本身就是目标。
+          var src = img.currentSrc || img.src || '';
+          if (isImageUrl(src) && previewImage(src, imgLabel(img))) { e.preventDefault(); e.stopPropagation(); return; }
+        }
+      }
       var target = (el.getAttribute('target') || '').toLowerCase();
       if (target === '_blank') el.removeAttribute('target');
     } catch (x) {}
@@ -477,6 +553,11 @@ const NEW_WINDOW_PATCH_JS: &str = r#"
     var originalOpen = window.open;
     window.open = function (url) {
       try {
+        var urlStr = String(url == null ? '' : url);
+        // 站点自己 window.open 图片时，原来会走下面的「下载类地址」分支
+        // （.png 命中扩展名）整页导航，账号页同样被顶掉 —— 先拦成预览小窗。
+        var absolute = urlStr ? absoluteUrl(urlStr) : '';
+        if (isImageUrl(absolute) && previewImage(absolute, '')) return null;
         if (isMemoryUrl(url)) {
           var a = document.createElement('a');
           a.href = url;
@@ -498,6 +579,277 @@ const NEW_WINDOW_PATCH_JS: &str = r#"
   } catch (x) {}
 })();
 "#;
+
+/// 图片预览小窗里注入的查看器。
+///
+/// 小窗直接加载图片地址，WebView2 会把这个响应渲染成一张「图片文档」。这里在
+/// 文档就绪后重新排版：顶部一条 34px 的路径栏（可复制），下面是图片本体，
+/// 点按钮在「适应窗口 / 原始大小」之间切换，图片没加载出来时给一句说明。
+/// 占位符 `__MB_IMG_PATH__` 由宿主用 `serde_json::to_string` 换成 JS 字符串字面量，
+/// 不要手写引号拼路径（路径里可能有引号、反斜杠、中文）。
+pub(crate) const IMAGE_PREVIEW_JS: &str = r#"
+(function () {
+  var PATH_TEXT = __MB_IMG_PATH__;
+  var BAR_ID = '__mb_img_bar';
+  var BODY_ID = '__mb_img_body';
+
+  var CSS = [
+    'html, body { margin:0 !important; padding:0 !important; background:#14161a !important; }',
+    'body { overflow:hidden !important; }',
+    '#' + BAR_ID + ' { position:fixed; top:0; left:0; right:0; height:34px; z-index:2147483647;',
+    '  display:flex; align-items:center; gap:8px; padding:0 10px; box-sizing:border-box;',
+    '  background:#20242b; border-bottom:1px solid #333a45; color:#e6e9ee;',
+    '  font:12px/1 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }',
+    '#' + BAR_ID + ' .mbp { flex:1 1 auto; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }',
+    '#' + BAR_ID + ' button { flex:0 0 auto; height:22px; padding:0 9px; cursor:pointer;',
+    '  border:1px solid #3d4653; border-radius:5px; background:#2b313a; color:#dfe4ea; font-size:12px; }',
+    '#' + BAR_ID + ' button:hover { background:#39414d; }',
+    '#' + BODY_ID + ' { position:absolute; top:34px; left:0; right:0; bottom:0; overflow:auto;',
+    '  display:flex; align-items:center; justify-content:center; }',
+    '#' + BODY_ID + ' img { display:block; max-width:100%; max-height:100%; }',
+    '#' + BODY_ID + '.mb-original { display:block; }',
+    '#' + BODY_ID + '.mb-original img { max-width:none; max-height:none; }',
+    '#__mb_img_note { position:absolute; top:34px; left:0; right:0; padding:6px 10px;',
+    '  background:#4a2530; color:#ffd9e0; font:12px/1.5 -apple-system,"Segoe UI",sans-serif; z-index:2147483647; }'
+  ].join('\n');
+
+  function note(text) {
+    try {
+      if (document.getElementById('__mb_img_note')) return;
+      var d = document.createElement('div');
+      d.id = '__mb_img_note';
+      d.textContent = text;
+      document.body.appendChild(d);
+    } catch (e) {}
+  }
+
+  function copyPath(btn) {
+    function legacy() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = PATH_TEXT;
+        ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        var done = document.execCommand('copy');
+        ta.remove();
+        return done;
+      } catch (e) { return false; }
+    }
+    function settle(text) {
+      try { btn.textContent = text; } catch (e) {}
+      setTimeout(function () { try { btn.textContent = '复制路径'; } catch (e) {} }, 1200);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(PATH_TEXT).then(
+          function () { settle('已复制'); },
+          function () { settle(legacy() ? '已复制' : '复制失败'); }
+        );
+        return;
+      }
+    } catch (e) {}
+    settle(legacy() ? '已复制' : '复制失败');
+  }
+
+  function build() {
+    try {
+      var img = document.querySelector('img');
+      // 不是图片文档（例如服务端返回了 HTML 或附件）就不动它，别把人家的页面拆了。
+      if (!img) return false;
+      if (document.getElementById(BAR_ID)) return true;
+      document.title = PATH_TEXT;
+
+      var style = document.createElement('style');
+      style.textContent = CSS;
+      (document.head || document.documentElement).appendChild(style);
+
+      var path = document.createElement('span');
+      path.className = 'mbp';
+      path.textContent = PATH_TEXT;
+      path.title = PATH_TEXT;
+
+      var copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.textContent = '复制路径';
+      copyBtn.addEventListener('click', function () { copyPath(copyBtn); });
+
+      var zoomBtn = document.createElement('button');
+      zoomBtn.type = 'button';
+      zoomBtn.textContent = '原始大小';
+
+      var bar = document.createElement('div');
+      bar.id = BAR_ID;
+      bar.appendChild(path);
+      bar.appendChild(copyBtn);
+      bar.appendChild(zoomBtn);
+
+      var body = document.createElement('div');
+      body.id = BODY_ID;
+      body.appendChild(img);
+      zoomBtn.addEventListener('click', function () {
+        var original = body.classList.toggle('mb-original');
+        zoomBtn.textContent = original ? '适应窗口' : '原始大小';
+      });
+
+      document.body.appendChild(body);
+      document.body.appendChild(bar);
+
+      var warn = function () {
+        if (img.naturalWidth === 0) {
+          note('图片没能加载出来：链接可能已过期，或需要该账号的登录状态。路径见上方，可直接复制。');
+        }
+      };
+      if (img.complete) setTimeout(warn, 200);
+      else img.addEventListener('error', warn);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function boot() { if (!build()) setTimeout(build, 300); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+  window.addEventListener('load', boot);
+})();
+"#;
+
+/// 预览小窗的序号：同一毫秒内连点两张图也不会撞 window label。
+static IMAGE_WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn query_map(url: &Url) -> HashMap<String, String> {
+    url.query()
+        .map(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 路径太长时保留尾部：文件名和辨识度最高的段都在后面。
+pub(crate) fn clip_tail(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let tail: String = text.chars().skip(count - max).collect();
+    format!("…{tail}")
+}
+
+/// 百分号解码，只用于标题栏展示：中文文件名在 URL 里是 %E5%9B%BE...，
+/// 直接显示没人看得懂。非法序列原样保留（`Url::path()` 给的是编码后的原始路径）。
+pub(crate) fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(hex) = input.get(i + 1..i + 3) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 小窗标题栏（也是窗口标题）显示什么：就是图片路径本身。
+/// blob: 没有可读路径，退回链接文字（alt / title），再没有就写个通用名。
+pub(crate) fn image_window_title(raw_url: &str, hint: &str) -> String {
+    let hint = hint.trim();
+    if raw_url.starts_with("blob:") {
+        return if hint.is_empty() {
+            "blob 预览图".to_string()
+        } else {
+            clip_tail(hint, 160)
+        };
+    }
+    let display = match Url::parse(raw_url) {
+        Ok(url) => {
+            let mut out = String::new();
+            out.push_str(url.scheme());
+            out.push_str("://");
+            if let Some(host) = url.host_str() {
+                out.push_str(host);
+            }
+            out.push_str(&percent_decode(url.path()));
+            if let Some(q) = url.query() {
+                out.push('?');
+                out.push_str(q);
+            }
+            out
+        }
+        Err(_) => raw_url.to_string(),
+    };
+    clip_tail(&display, 160)
+}
+
+fn build_image_window(
+    app: &AppHandle,
+    label: &str,
+    url: Url,
+    title: String,
+    script: String,
+    data_dir: Option<PathBuf>,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+        .title(title)
+        .inner_size(760.0, 620.0)
+        .min_inner_size(320.0, 240.0)
+        .resizable(true)
+        .center()
+        .disable_drag_drop_handler()
+        .initialization_script(script);
+    if let Some(dir) = data_dir {
+        builder = builder.data_directory(dir);
+    }
+    builder.build()
+}
+
+/// 另开一个小窗显示图片本体，窗口标题就是图片路径。**不动账号页**。
+///
+/// 数据目录优先复用账号自己的 UserDataFolder：blob: 图片和需要 cookie 的图片
+/// 只有落在同一个存储分区里才取得出来。WebView2 不允许同一目录挂两套不同的
+/// 环境参数，复用失败（账号配了代理 / 语言时参数就不同）就退回默认数据目录 ——
+/// 这时 http(s) 图片照常能看，只是一次性链接以外的会话内图片可能加载不出来。
+fn open_image_window(app: &AppHandle, profile_id: &str, raw_url: &str, hint: &str) {
+    let Ok(url) = Url::parse(raw_url) else { return };
+    if !matches!(url.scheme(), "http" | "https" | "blob") {
+        return;
+    }
+    let title = image_window_title(raw_url, hint);
+    let script = IMAGE_PREVIEW_JS.replace(
+        "__MB_IMG_PATH__",
+        &serde_json::to_string(&title).unwrap_or_else(|_| "\"\"".to_string()),
+    );
+    let stamp = Utc::now().timestamp_millis();
+    let seq = IMAGE_WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
+    let label = format!("mb-image-{stamp}-{seq}");
+
+    if let Ok(dir) = profile_data_dir(app, profile_id) {
+        if let Ok(window) = build_image_window(
+            app,
+            &label,
+            url.clone(),
+            title.clone(),
+            script.clone(),
+            Some(dir),
+        ) {
+            let _ = window.set_focus();
+            return;
+        }
+    }
+    // label 可能已被上一次尝试占住（环境起来了、窗口没成），换个 label 再试。
+    let fallback_label = format!("mb-image-{stamp}-{seq}-plain");
+    if let Ok(window) = build_image_window(app, &fallback_label, url, title, script, None) {
+        let _ = window.set_focus();
+    }
+}
 
 pub(crate) fn fingerprint_script(id: &str) -> String {
     FINGERPRINT_GUARD_JS.replace("__SEED__", &profile_seed(id).to_string())
@@ -1053,6 +1405,7 @@ pub(crate) fn create_profile_webview(
 
     let id_for_event = profile.id.clone();
     let app_for_event = app.clone();
+    let id_for_image = profile.id.clone();
     let app_for_page_load = app.clone();
     let id_for_page_load = profile.id.clone();
     let download_guard_started_at = Arc::new(Mutex::new(Instant::now()));
@@ -1066,14 +1419,7 @@ pub(crate) fn create_profile_webview(
             // 注入脚本用 mbstatus:// 假导航回传积分 / 登录账号，这里拦截并取消导航。
             if url.scheme() == STATUS_SCHEME {
                 if url.host_str() == Some("report") {
-                    let query: HashMap<String, String> = url
-                        .query()
-                        .map(|q| {
-                            url::form_urlencoded::parse(q.as_bytes())
-                                .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let query = query_map(url);
                     let field = |key: &str| {
                         query
                             .get(key)
@@ -1093,6 +1439,29 @@ pub(crate) fn create_profile_webview(
                             ..Default::default()
                         }),
                     );
+                }
+                return false;
+            }
+            // 注入脚本用 mbimage://open?u=<图片地址> 请求把图片放进独立小窗。
+            // 同样取消导航：账号页的网址和位置都保持原样，用户不会丢掉当前会话。
+            if url.scheme() == IMAGE_SCHEME {
+                if url.host_str() == Some("open") {
+                    let query = query_map(url);
+                    let target = query
+                        .get("u")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                    if let Some(target) = target {
+                        let hint = query.get("t").cloned().unwrap_or_default();
+                        let app_for_image = app_for_event.clone();
+                        let id_for_image = id_for_image.clone();
+                        // 建窗放到事件循环下一拍：在 NavigationStarting 回调里同步
+                        // 建 WebView2 会和 WebView2 自己的消息处理打架。
+                        let handle_for_image = app_for_image.clone();
+                        let _ = app_for_image.run_on_main_thread(move || {
+                            open_image_window(&handle_for_image, &id_for_image, &target, &hint);
+                        });
+                    }
                 }
                 return false;
             }
