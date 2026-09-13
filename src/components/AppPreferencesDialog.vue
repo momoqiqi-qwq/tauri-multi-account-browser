@@ -336,6 +336,15 @@ function save() {
             <span>下载历史默认视图</span>
             <el-segmented v-model="uiForm.downloadView" :options="[{ label: '按账号分组', value: 'grouped' }, { label: '列表', value: 'flat' }]" />
           </label>
+          <label class="settings-field">
+            <span>下载历史每行列数</span>
+            <el-select v-model="uiForm.downloadColumns">
+              <el-option :value="1" label="1 列" />
+              <el-option :value="2" label="2 列" />
+              <el-option :value="3" label="3 列" />
+            </el-select>
+            <small>分组视图下每行放几个账号卡片。列数越多单屏能看到的内容越多；窗口较窄时会自动收回 1 列。</small>
+          </label>
         </div>
 
         <div class="settings-section">

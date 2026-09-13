@@ -256,6 +256,8 @@ export interface UiPreferences {
   showAiUsageTime: boolean
   downloadRowsPerPage: number
   downloadView: 'grouped' | 'flat'
+  /** 下载历史每行显示多少列：分组视图=一行放几个账号卡片，列表视图=一行放几条记录 */
+  downloadColumns: number
   /** 标签页宽度 */
   tabWidth: 'compact' | 'standard' | 'wide'
   /** 后台标签页自动休眠 */

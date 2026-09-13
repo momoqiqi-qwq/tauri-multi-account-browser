@@ -184,8 +184,9 @@ button, input { font: inherit; }
 .profile-list::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--sidebar-muted) 34%, transparent); border: 2px solid var(--sidebar); border-radius: 999px; }
 .status-list::-webkit-scrollbar-track { background: var(--sidebar-2); }
 .status-list::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--sidebar-muted) 30%, transparent); border: 2px solid var(--sidebar-2); border-radius: 999px; }
-.dl-groups::-webkit-scrollbar-track { background: var(--surface); }
-.dl-groups::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--surface); border-radius: 999px; }
+.dl-groups::-webkit-scrollbar-track { background: transparent; }
+.dl-groups::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 40%, transparent); background-clip: padding-box; border: 2px solid transparent; border-radius: 999px; }
+.dl-groups::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--muted) 62%, transparent); background-clip: padding-box; }
 .status-card { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 12px; cursor: pointer; border: 1px solid transparent; background: var(--sidebar-card); transition: 120ms ease; }
 .status-card:hover { background: var(--sidebar-hover); }
 .status-card.active { border-color: color-mix(in srgb, var(--sidebar-muted) 35%, transparent); background: var(--sidebar-active); }
@@ -270,7 +271,17 @@ button, input { font: inherit; }
 
 .dl-badge { display: inline-flex; }
 .dl-badge .el-badge__content { background: var(--danger); border: none; }
-.downloads-dialog .el-dialog__body { padding-top: 8px; }
+/* v26 下载历史弹窗：把弹窗和列表都限制在视口内。
+   旧写法只有 .dl-groups { max-height: 58vh }，且它是 flex 列容器：
+   子项 .dl-group 默认 flex-shrink: 1，又因为 .dl-group 带 overflow: hidden 使其
+   自动最小尺寸为 0，于是「下载记录一多」时容器不滚动，而是把每个账号卡片按比例
+   压扁、行内容被裁掉（截图里卡片只剩标题栏 + 半行就是这么来的），并且看不到滚动条。
+   新写法：列表用 grid（auto 行按内容定高，不会被压扁）+ 视口换算的高度上限。 */
+.downloads-dialog {
+  /* element-plus 默认 margin: 15vh auto 50px，会让弹窗底部（清空历史/关闭）
+     被顶出视口，要滚动才能点到。与 .el-dialog 同权重，靠加载顺序不保险，故 !important。 */
+  margin: 6vh auto 24px !important;
+}
 .dl-toolbar { display: flex; flex-direction: column; gap: 10px; padding: 10px; margin-bottom: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
 .dl-toolbar-main, .dl-toolbar-secondary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dl-search { flex: 1 1 280px; min-width: 220px; }
@@ -279,8 +290,28 @@ button, input { font: inherit; }
 .dl-toolbar-secondary .el-checkbox { margin-right: auto; }
 .dl-selection-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .dl-page-size { width: 112px; }
-.dl-groups { display: flex; flex-direction: column; gap: 14px; max-height: 58vh; overflow-y: auto; overflow-x: hidden; padding-right: 4px; scrollbar-color: var(--border) var(--surface); scrollbar-width: thin; }
-.dl-group { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.dl-column-size { width: 96px; }
+/* 用 grid 而不是 flex：grid 的 auto 行按内容定高，容器再矮也只是出现滚动条，
+   不会把卡片压扁。列数由模板写入的 --dl-cols 控制。
+   高度上限按视口换算：弹窗上方 6vh + 头部/工具栏/底部约 280px + 下方 24px，
+   于是弹窗总高 ≈ 6vh + 280 + 列表 + 24 ≤ 视口高度，记录再多也不会把底部按钮顶出去。 */
+.dl-groups {
+  min-height: 120px;
+  max-height: 62vh;
+  max-height: max(160px, calc(86vh - 280px));
+  display: grid;
+  grid-template-columns: repeat(var(--dl-cols, 1), minmax(0, 1fr));
+  align-content: start;
+  align-items: start;
+  gap: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+.dl-group { min-width: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
 .dl-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .dl-group-avatar { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 9px; display: grid; place-items: center; background: var(--sidebar); color: var(--sidebar-text); font-weight: 800; font-size: 13px; }
 .dl-group-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -298,7 +329,11 @@ button, input { font: inherit; }
 .dl-file-meta { color: var(--subtle); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dl-file-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .dl-file-actions .el-button + .el-button { margin-left: 0; }
-.dl-flat-group { overflow: hidden; }
+.dl-flat-group { grid-column: 1 / -1; overflow: hidden; }
+/* 列表视图里「列」作用在记录行本身：把记录行也铺成同样的网格。
+   分组视图里每条记录仍占满所在卡片宽度（上面那条 .dl-items 规则不受影响）。 */
+.dl-flat-group .dl-items { display: grid; grid-template-columns: repeat(var(--dl-cols, 1), minmax(0, 1fr)); }
+.dl-flat-group .dl-items > .dl-item { min-width: 0; border-bottom: 1px solid var(--border); }
 .dl-empty { color: var(--subtle); text-align: center; padding: 32px 0; }
 .dl-pagination { display: flex; justify-content: center; padding-top: 14px; }
 .dl-footer { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -358,6 +393,12 @@ button, input { font: inherit; }
   .downloads-dialog { width: 94vw !important; }
   .dl-footer { align-items: flex-end; }
   .dl-batch-actions { flex-wrap: wrap; }
+}
+
+/* 窗口太窄时多列会把文件名和操作按钮挤到看不清，强制收回 1 列。
+   列数是模板写在元素上的内联自定义属性，只有 !important 能覆盖。 */
+@media (max-width: 860px) {
+  .dl-groups { --dl-cols: 1 !important; }
 }
 
 /* v7: 标签页 AI 状态 */

@@ -101,6 +101,7 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showAiUsageTime: true,
   downloadRowsPerPage: 20,
   downloadView: 'grouped',
+  downloadColumns: 2,
   tabWidth: 'standard',
   tabSleepEnabled: true,
   tabSleepMinutes: 15,
@@ -109,6 +110,8 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
 
 const themeIds = new Set(THEME_OPTIONS.map((theme) => theme.id))
 const rowOptions = new Set([10, 20, 50, 100])
+/** 每行列数：列太多会让账号卡片窄到放不下文件名和操作按钮，所以封顶 3 列。 */
+const columnOptions = new Set([1, 2, 3])
 
 export function normalizeUiPreferences(value: Partial<UiPreferences> | null | undefined): UiPreferences {
   const theme = value?.theme && themeIds.has(value.theme) ? value.theme : DEFAULT_UI_PREFERENCES.theme
@@ -122,6 +125,9 @@ export function normalizeUiPreferences(value: Partial<UiPreferences> | null | un
     ? Number(value?.downloadRowsPerPage)
     : DEFAULT_UI_PREFERENCES.downloadRowsPerPage
   const downloadView = value?.downloadView === 'flat' ? 'flat' : 'grouped'
+  const downloadColumns = columnOptions.has(Number(value?.downloadColumns))
+    ? Number(value?.downloadColumns)
+    : DEFAULT_UI_PREFERENCES.downloadColumns
   const tabWidth = value?.tabWidth === 'compact' || value?.tabWidth === 'wide' ? value.tabWidth : 'standard'
   const tabSleepMinutesRaw = Number(value?.tabSleepMinutes)
   const tabSleepMinutes = Number.isFinite(tabSleepMinutesRaw) ? Math.min(1440, Math.max(1, Math.round(tabSleepMinutesRaw))) : 15
@@ -152,6 +158,7 @@ export function normalizeUiPreferences(value: Partial<UiPreferences> | null | un
     showAiUsageTime: legacy?.showAiUsageTime ?? (legacy?.showStatusUpdatedTime !== false),
     downloadRowsPerPage,
     downloadView,
+    downloadColumns,
     tabWidth,
     tabSleepEnabled: value?.tabSleepEnabled !== false,
     tabSleepMinutes,

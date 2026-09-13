@@ -163,6 +163,12 @@ function updateView(value: string | number | boolean) {
   emit('updateUi', { ...props.uiPreferences, downloadView })
 }
 
+const columns = computed(() => props.uiPreferences.downloadColumns)
+
+function updateColumns(value: number) {
+  emit('updateUi', { ...props.uiPreferences, downloadColumns: value })
+}
+
 function formatSize(bytes: number): string {
   if (!bytes) return '—'
   if (bytes < 1024) return `${bytes} B`
@@ -389,6 +395,16 @@ async function clearAll() {
         </el-checkbox>
         <span class="dl-selection-count">已选 {{ selectedEntries.length }} / {{ filteredEntries.length }}</span>
         <el-select
+          :model-value="columns"
+          class="dl-column-size"
+          title="每行显示多少列"
+          @update:model-value="updateColumns(Number($event))"
+        >
+          <el-option :value="1" label="1 列" />
+          <el-option :value="2" label="2 列" />
+          <el-option :value="3" label="3 列" />
+        </el-select>
+        <el-select
           :model-value="pageSize"
           class="dl-page-size"
           @update:model-value="updateRowsPerPage(Number($event))"
@@ -401,7 +417,7 @@ async function clearAll() {
       </div>
     </div>
 
-    <div v-if="filteredEntries.length" class="dl-groups">
+    <div v-if="filteredEntries.length" class="dl-groups" :style="{ '--dl-cols': String(columns) }">
       <template v-if="uiPreferences.downloadView === 'grouped'">
         <section v-for="group in groups" :key="group.key" class="dl-group">
           <header class="dl-group-head">
