@@ -1,6 +1,6 @@
 [package]
 name = "tauri-multi-account-browser"
-version = "0.7.0"
+version = "0.8.0"
 description = "Tauri 2 multi-account browser shell"
 authors = ["OpenAI"]
 edition = "2021"
