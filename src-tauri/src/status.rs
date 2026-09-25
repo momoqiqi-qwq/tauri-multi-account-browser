@@ -18,12 +18,10 @@ pub(crate) fn set_active_profile_id(id: &str) {
 }
 
 pub(crate) fn is_active_profile(id: &str) -> bool {
-    active_profile_id()
-        .lock()
-        .ok()
-        .and_then(|active| active.clone())
-        .as_deref()
-        == Some(id)
+    match active_profile_id().lock() {
+        Ok(active) => active.as_deref() == Some(id),
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn profile_activity_eval_script(active: bool) -> String {
@@ -124,6 +122,19 @@ pub(crate) fn save_profile_status<R: Runtime>(app: &AppHandle<R>, id: &str, mut 
             } else {
                 status.answer_finished_at = previous.answer_finished_at.clone();
             }
+            // v28：AI 对话计时。上升沿（停止按钮出现 = 用户刚发送）记下本轮开始
+            // 时间，前端生成期间用它实时走表；新一轮开始本身就是「重新从零计算」。
+            // 下降沿用 finished_at 记完成时刻，本轮耗时优先用页面脚本实测的 d；
+            // 脚本没带 d（典型：生成中途刷新页面，状态复位后补报 g=0）就沿用
+            // 上一轮实测值，避免把刷新间隔误当成一轮对话时长。
+            if status.answer_generating && !previous.answer_generating {
+                status.answer_started_at = Some(Utc::now().to_rfc3339());
+            } else {
+                status.answer_started_at = previous.answer_started_at.clone();
+            }
+            if status.answer_duration_ms.is_none() {
+                status.answer_duration_ms = previous.answer_duration_ms;
+            }
         }
         // 没有 previous 时不主动记时间：可能是刚加载的标签页（脚本状态被重置），
         // 也可能是首次创建账号。等下一次出现生成→不生成的真实边沿再记。
@@ -143,35 +154,73 @@ pub(crate) fn save_profile_status<R: Runtime>(app: &AppHandle<R>, id: &str, mut 
     );
 }
 
+/// 就地改写某条状态的个别字段并落盘 + 广播，**不走** `save_profile_status`
+/// 的生成/回答边沿检测。
+///
+/// 宿主侧更新与页面无关的字段（如代理探测结果）时必须走这里：
+/// `save_profile_status` 会拿传入值和上一条比较边沿，而宿主手里没有页面状态，
+/// 只能给出默认值 —— 于是被当成一次真实的「生成中 → 空闲」下降沿，凭空写下
+/// 一轮对话的完成时间，还会顺带清掉未读提醒。
+///
+/// `patch` 返回 false 表示无需改动，此时既不写盘也不广播（也不会为不存在的
+/// 账号留下空状态）。
+fn patch_profile_status<R: Runtime, F>(app: &AppHandle<R>, id: &str, patch: F)
+where
+    F: FnOnce(&mut ProfileStatus) -> bool,
+{
+    let Ok(store) = app.store(STORE_FILE) else {
+        return;
+    };
+    let mut map: HashMap<String, ProfileStatus> = store
+        .get(STATUS_KEY)
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let patched = {
+        let status = map.entry(id.to_string()).or_default();
+        patch(status).then(|| status.clone())
+    };
+    let Some(status) = patched else { return };
+    if let Ok(value) = serde_json::to_value(&map) {
+        store.set(STATUS_KEY, value);
+        let _ = store.save();
+    }
+    let _ = app.emit(
+        "profile:status",
+        ProfileStatusEvent {
+            id: id.to_string(),
+            status,
+        },
+    );
+}
+
+/// 代理探测结果入库：只覆盖 4 个代理字段，其余状态原样保留。
+pub(crate) fn save_profile_proxy_result<R: Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    result: &ProxyTestResult,
+) {
+    patch_profile_status(app, id, |status| {
+        status.proxy_ip = Some(result.ip.clone());
+        status.proxy_region = Some(result.region.clone());
+        status.proxy_isp = Some(result.isp.clone());
+        status.proxy_tested_at = Some(Utc::now().to_rfc3339());
+        true
+    });
+}
+
 /// 用户切回账号即视为已查看"回答完成"提醒。页面端也同步清除，
 /// 防止下一次状态上报把提醒重新置回。
 ///
 /// 注意：只清 `answer_ready`（未读提醒），**保留** `answer_finished_at`——
 /// 它现在表示「最近一次 AI 完成回答的时间」，要持久用于侧边栏展示。
 pub(crate) fn clear_profile_answer_ready<R: Runtime>(app: &AppHandle<R>, id: &str) {
-    if let Ok(store) = app.store(STORE_FILE) {
-        let mut map: HashMap<String, ProfileStatus> = store
-            .get(STATUS_KEY)
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        if let Some(status) = map.get_mut(id) {
-            if status.answer_ready {
-                status.answer_ready = false;
-                let cloned = status.clone();
-                if let Ok(value) = serde_json::to_value(&map) {
-                    store.set(STATUS_KEY, value);
-                    let _ = store.save();
-                }
-                let _ = app.emit(
-                    "profile:status",
-                    ProfileStatusEvent {
-                        id: id.to_string(),
-                        status: cloned,
-                    },
-                );
-            }
+    patch_profile_status(app, id, |status| {
+        if !status.answer_ready {
+            return false;
         }
-    }
+        status.answer_ready = false;
+        true
+    });
     if let Some(webview) = app.get_webview(&profile_label(id)) {
         let _ = webview
             .eval("try { document.dispatchEvent(new Event('mb-answer-seen')); } catch (e) {}");

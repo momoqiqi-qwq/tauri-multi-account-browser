@@ -28,10 +28,6 @@ export interface TabsApi {
   openTabs: Ref<string[]>
   activeId: Ref<string | null>
   currentUrl: Ref<string>
-  openedAt: Ref<Record<string, number>>
-  /** 各标签累计运行秒数；休眠或手动暂停时停止累计 */
-  runtimeSeconds: Ref<Record<string, number>>
-  runtimePaused: Ref<Record<string, boolean>>
   /** 已休眠（WebView 被销毁但标签保留）的 id */
   hibernated: Ref<string[]>
   pinned: Ref<string[]>
@@ -39,8 +35,6 @@ export interface TabsApi {
   closeTab(id: string): Promise<void>
   togglePin(id: string): void
   reorder(ids: string[]): void
-  toggleRuntimePause(id: string): void
-  resetRuntime(id: string): void
   /** 从 localStorage 恢复上次会话；必须在账号列表加载完成后调用 */
   restoreSession(): void
   startLifecycle(): void
@@ -49,9 +43,11 @@ export interface TabsApi {
 }
 
 /**
- * 标签页生命周期：打开/关闭/固定/排序、运行计时、自动休眠、会话恢复。
+ * 标签页生命周期：打开/关闭/固定/排序、自动休眠、会话恢复。
  *
  * 只管"哪些标签在前端存在、哪个是当前标签"，不去动账号列表本身。
+ * v28 起标签上的计时不再在这里累计 —— 那是「AI 对话计时」，由账号状态里的
+ * answer_started_at / answer_duration_ms（Rust 持久化）驱动，TabStrip 直接展示。
  */
 export function useTabs(deps: TabsDeps): TabsApi {
   const { profiles, preferences, getBounds, globalDefaultUrl, onActivateError } = deps
@@ -59,9 +55,6 @@ export function useTabs(deps: TabsDeps): TabsApi {
   const openTabs = ref<string[]>([])
   const activeId = ref<string | null>(null)
   const currentUrl = ref('')
-  const openedAt = ref<Record<string, number>>({})
-  const runtimeSeconds = ref<Record<string, number>>({})
-  const runtimePaused = ref<Record<string, boolean>>({})
   const hibernated = ref<string[]>([])
   const pinned = ref<string[]>([])
   const lastActiveAt = ref<Record<string, number>>({})
@@ -99,17 +92,11 @@ export function useTabs(deps: TabsDeps): TabsApi {
           : openTabs.value[openTabs.value.length - 1] || null
       activeId.value = restoredActive
       const now = Date.now()
-      const opened: Record<string, number> = {}
       const last: Record<string, number> = {}
-      const seconds: Record<string, number> = {}
       for (const id of openTabs.value) {
-        opened[id] = now
         last[id] = now
-        seconds[id] = 0
       }
-      openedAt.value = opened
       lastActiveAt.value = last
-      runtimeSeconds.value = seconds
       // 恢复时只保留当前标签的 WebView，其余标记为休眠，等真正切过去再创建。
       hibernated.value = openTabs.value.filter((id) => id !== restoredActive)
     } catch {
@@ -130,15 +117,6 @@ export function useTabs(deps: TabsDeps): TabsApi {
   function reorder(ids: string[]) {
     openTabs.value = ids
     persist()
-  }
-
-  function toggleRuntimePause(id: string) {
-    runtimePaused.value = { ...runtimePaused.value, [id]: !runtimePaused.value[id] }
-  }
-
-  function resetRuntime(id: string) {
-    runtimeSeconds.value = { ...runtimeSeconds.value, [id]: 0 }
-    openedAt.value = { ...openedAt.value, [id]: Date.now() }
   }
 
   async function hibernateTab(id: string) {
@@ -173,12 +151,6 @@ export function useTabs(deps: TabsDeps): TabsApi {
       }
       if (!alreadyOpen) {
         openTabs.value = [...openTabs.value, id]
-        openedAt.value = { ...openedAt.value, [id]: Date.now() }
-        runtimeSeconds.value = {
-          ...runtimeSeconds.value,
-          [id]:
-            preferences.value.runtimeMode === 'app-total' ? (runtimeSeconds.value[id] || 0) : 0,
-        }
       }
 
       hibernated.value = hibernated.value.filter((tab) => tab !== id)
@@ -217,8 +189,6 @@ export function useTabs(deps: TabsDeps): TabsApi {
     if (openTabs.value.includes(id)) {
       await invoke('close_profile_tab', { id })
       openTabs.value = openTabs.value.filter((tab) => tab !== id)
-      const { [id]: _closedAt, ...remainingOpenedAt } = openedAt.value
-      openedAt.value = remainingOpenedAt
       hibernated.value = hibernated.value.filter((tab) => tab !== id)
       persist()
     }
@@ -237,11 +207,7 @@ export function useTabs(deps: TabsDeps): TabsApi {
     if (lifecycleTimer !== undefined) clearInterval(lifecycleTimer)
     lifecycleTimer = setInterval(() => {
       const now = Date.now()
-      const next = { ...runtimeSeconds.value }
       for (const id of openTabs.value) {
-        if (!hibernated.value.includes(id) && !runtimePaused.value[id]) {
-          next[id] = (next[id] || 0) + 1
-        }
         const inactiveMs = now - (lastActiveAt.value[id] || now)
         if (
           preferences.value.tabSleepEnabled &&
@@ -253,7 +219,6 @@ export function useTabs(deps: TabsDeps): TabsApi {
           void hibernateTab(id)
         }
       }
-      runtimeSeconds.value = next
     }, 1000)
   }
 
@@ -268,17 +233,12 @@ export function useTabs(deps: TabsDeps): TabsApi {
     openTabs,
     activeId,
     currentUrl,
-    openedAt,
-    runtimeSeconds,
-    runtimePaused,
     hibernated,
     pinned,
     activate,
     closeTab,
     togglePin,
     reorder,
-    toggleRuntimePause,
-    resetRuntime,
     restoreSession,
     startLifecycle,
     stopLifecycle,

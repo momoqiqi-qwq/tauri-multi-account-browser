@@ -5,6 +5,8 @@
  * 全部关闭后再恢复。
  */
 
+import { onBeforeUnmount, watch } from 'vue'
+
 type SuppressionHandler = (suppress: boolean) => void
 
 let handler: SuppressionHandler | null = null
@@ -31,4 +33,24 @@ export function acquireWebviewSuppression(): () => void {
     count -= 1
     if (count === 0) handler?.(false)
   }
+}
+
+/**
+ * 对话框专用：打开期间抑制账号 WebView，关闭或组件卸载时恢复。
+ *
+ * 漏掉这一步的对话框不会被任何人发现 —— 只有当账号页恰好铺满视口区域时才表现为
+ * “弹窗打不开 / 点不到”，所以做成一个必须显式调用的开关而不是靠各自复制粘贴。
+ *
+ * 传 getter 而不是 ref，`defineModel` 返回的 ModelRef 也能直接喂进来。
+ */
+export function useDialogSuppression(isOpen: () => boolean) {
+  let release: (() => void) | null = null
+  watch(isOpen, (open) => {
+    release?.()
+    release = open ? acquireWebviewSuppression() : null
+  })
+  onBeforeUnmount(() => {
+    release?.()
+    release = null
+  })
 }

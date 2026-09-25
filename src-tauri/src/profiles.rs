@@ -483,6 +483,17 @@ pub(crate) fn set_profile_webview_visible(
     }
 }
 
+/// 把系统焦点交回主界面 WebView（Ctrl+L 聚焦地址栏等宿主快捷键用）。
+/// 账号 WebView 通常持有焦点，宿主 DOM 里对输入框 focus() 之前必须先把
+/// 原生焦点从子 WebView 切回主 WebView，否则输入框拿不到键盘输入。
+#[tauri::command]
+pub(crate) fn focus_main_ui(app: AppHandle) -> Result<(), String> {
+    let webview = app
+        .get_webview("main")
+        .ok_or_else(|| "主界面尚未创建".to_string())?;
+    webview.set_focus().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub(crate) fn navigate_profile(app: AppHandle, id: String, url: String) -> Result<(), String> {
     let webview = app
@@ -535,7 +546,12 @@ pub(crate) async fn clear_profile_data(app: AppHandle, id: String) -> Result<(),
     {
         let dir = profile_data_dir(&app, &id)?;
         if dir.exists() {
-            fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+            // 一个用过的 WebView2 数据目录动辄上万个小文件，递归删除放在主线程
+            // 会让整个界面冻住，这里丢给阻塞线程池。
+            tauri::async_runtime::spawn_blocking(move || fs::remove_dir_all(dir))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(())

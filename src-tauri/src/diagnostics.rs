@@ -4,15 +4,12 @@
 //! 后端抛出的原始错误通常是一长串英文（来自 WebView2 / 系统 IO），
 //! 用户看不懂，所以统一走 `classify_error` 归类 + `hint` 给建议。
 
-use chrono::Utc;
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 
 use crate::*;
 
@@ -406,23 +403,7 @@ pub(crate) async fn test_profile_proxy(
     };
 
     if result.ok {
-        if let Ok(profiles) = load_profiles(&app) {
-            if profiles.iter().any(|p| p.id == profile_id) {
-                let mut map: HashMap<String, ProfileStatus> = app
-                    .store(STORE_FILE)
-                    .ok()
-                    .and_then(|store| store.get(STATUS_KEY))
-                    .and_then(|value| serde_json::from_value(value).ok())
-                    .unwrap_or_default();
-                let status = map.entry(profile_id.clone()).or_default();
-                status.proxy_ip = Some(result.ip.clone());
-                status.proxy_region = Some(result.region.clone());
-                status.proxy_isp = Some(result.isp.clone());
-                status.proxy_tested_at = Some(Utc::now().to_rfc3339());
-                let status = status.clone();
-                save_profile_status(&app, &profile_id, status);
-            }
-        }
+        save_profile_proxy_result(&app, &profile_id, &result);
     }
     Ok(result)
 }

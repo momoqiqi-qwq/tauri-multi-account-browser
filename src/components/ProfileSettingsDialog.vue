@@ -16,6 +16,8 @@ const props = defineProps<{
   knownTags: string[]
   saving: boolean
   globalDefaultUrl: string
+  /** 从网站导航新建时预填独立主页；不影响已有账号。 */
+  initialUrl?: string
 }>()
 
 const emit = defineEmits<{
@@ -61,8 +63,8 @@ watch(visible, (open) => {
     releaseDialog = acquireWebviewSuppression()
     const p = props.profile
     form.name = p?.name ?? ''
-    form.defaultUrl = p?.default_url?.trim() || props.globalDefaultUrl || DEFAULT_PROFILE_URL
-    form.urlMode = p?.url_mode ?? 'inherit'
+    form.defaultUrl = p?.default_url?.trim() || (!p ? props.initialUrl : undefined) || props.globalDefaultUrl || DEFAULT_PROFILE_URL
+    form.urlMode = p?.url_mode ?? (props.initialUrl ? 'custom' : 'inherit')
     form.incognito = p?.incognito ?? false
     form.proxy = p?.proxy ?? ''
     form.userAgent = p?.user_agent ?? ''

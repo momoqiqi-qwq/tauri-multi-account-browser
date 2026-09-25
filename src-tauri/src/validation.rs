@@ -1,7 +1,7 @@
 //! 输入校验与规范化：昵称、网址、代理、时区、语言、CSV、模板。
 
 use chrono::Utc;
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 use tauri::{AppHandle, Runtime};
 use url::Url;
 use uuid::Uuid;
@@ -194,15 +194,16 @@ pub(crate) fn sanitize_profile_name(raw: &str) -> Result<String, String> {
 
 pub(crate) fn normalize_url(raw: &str) -> Result<Url, String> {
     let trimmed = raw.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    let candidate = if trimmed.is_empty() {
-        DEFAULT_PROFILE_URL.to_string()
-    } else if lower.starts_with("http://") || lower.starts_with("https://") {
-        trimmed.to_string()
+    // 只在需要补 scheme 时才分配：整个账号列表每次导航、每次切标签都要过一遍
+    // 这里，原来的写法（先转小写、再拼 candidate）会让每个网址白付两次堆拷贝。
+    let candidate: Cow<'_, str> = if trimmed.is_empty() {
+        Cow::Borrowed(DEFAULT_PROFILE_URL)
+    } else if has_ascii_prefix(trimmed, "http://") || has_ascii_prefix(trimmed, "https://") {
+        Cow::Borrowed(trimmed)
     } else if trimmed.contains("://") {
         return Err("只支持 http:// 或 https:// 网址".to_string());
     } else {
-        format!("https://{trimmed}")
+        Cow::Owned(format!("https://{trimmed}"))
     };
 
     let url = Url::parse(&candidate).map_err(|e| format!("URL 不合法: {e}"))?;
@@ -210,6 +211,16 @@ pub(crate) fn normalize_url(raw: &str) -> Result<Url, String> {
         return Err("只支持 http:// 或 https:// 网址".to_string());
     }
     Ok(url)
+}
+
+/// 大小写不敏感的前缀判断（只用于 ASCII scheme，非 ASCII 字节直接判否）。
+///
+/// 语义与 `s.to_ascii_lowercase().starts_with(prefix)` 完全一致，但不分配。
+fn has_ascii_prefix(s: &str, prefix: &str) -> bool {
+    match s.get(..prefix.len()) {
+        Some(head) => head.eq_ignore_ascii_case(prefix),
+        None => false,
+    }
 }
 
 // ---- 导入 / 导出 ----

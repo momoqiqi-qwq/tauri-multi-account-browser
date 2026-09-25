@@ -1,0 +1,197 @@
+/* Controls share the palette of their containing surface, including dark sidebars.
+   Keep this after style.css and Element Plus; teleported dialogs use root tokens. */
+:root {
+  --control-bg: var(--surface-2);
+  --control-hover: var(--surface-3);
+  --control-text: var(--text);
+  --control-muted: var(--muted);
+  --control-border: var(--border);
+  --control-thumb: var(--surface);
+  --el-fill-color: var(--surface-3);
+  --el-fill-color-dark: var(--border);
+  --el-disabled-bg-color: var(--surface-2);
+  --el-disabled-text-color: var(--subtle);
+  --el-disabled-border-color: var(--border);
+  --el-border-color-extra-light: var(--border);
+  --el-mask-color-extra-light: color-mix(in srgb, var(--surface) 65%, transparent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, var(--surface));
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, var(--surface));
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, var(--surface));
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, var(--surface));
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.sidebar, .status-sidebar, .title-bar {
+  --control-bg: var(--sidebar-card);
+  --control-hover: var(--sidebar-hover);
+  --control-text: var(--sidebar-text);
+  --control-muted: var(--sidebar-muted);
+  --control-border: color-mix(in srgb, var(--sidebar-muted) 30%, var(--sidebar-card));
+  --control-thumb: var(--sidebar-card);
+  --el-fill-color-blank: var(--sidebar-card);
+  --el-fill-color-light: var(--sidebar-hover);
+  --el-fill-color-lighter: var(--sidebar-card);
+  --el-fill-color: var(--sidebar-hover);
+  --el-fill-color-dark: var(--sidebar-active);
+  --el-text-color-primary: var(--sidebar-text);
+  --el-text-color-regular: var(--sidebar-text);
+  --el-text-color-secondary: var(--sidebar-muted);
+  --el-border: 1px solid var(--control-border);
+  --el-border-color: var(--control-border);
+  --el-border-color-light: var(--control-border);
+  --el-border-color-lighter: var(--control-border);
+  --el-disabled-text-color: var(--sidebar-muted);
+}
+
+/* Recompute derived tokens in each surface scope instead of inheriting root colors. */
+:root, .sidebar, .status-sidebar, .title-bar {
+  --control-selected: color-mix(in srgb, var(--accent) 16%, var(--control-bg));
+  --control-selected-border: color-mix(in srgb, var(--accent) 55%, var(--control-border));
+  --control-scroll: color-mix(in srgb, var(--control-muted) 48%, transparent);
+}
+
+/* Variables preserve Element Plus sizing, circle/plain/link variants and behavior. */
+.el-button[class] {
+  --control-tone: var(--control-text);
+  --el-button-bg-color: var(--control-bg);
+  --el-button-text-color: var(--control-text);
+  --el-button-border-color: var(--control-border);
+  --el-button-hover-bg-color: var(--control-hover);
+  --el-button-hover-text-color: var(--control-text);
+  --el-button-hover-border-color: color-mix(in srgb, var(--control-tone) 45%, var(--control-border));
+  --el-button-active-bg-color: color-mix(in srgb, var(--control-tone) 16%, var(--control-bg));
+  --el-button-active-text-color: var(--control-text);
+  --el-button-active-border-color: var(--control-tone);
+  --el-button-disabled-bg-color: var(--control-bg);
+  --el-button-disabled-text-color: color-mix(in srgb, var(--control-muted) 70%, var(--control-bg));
+  --el-button-disabled-border-color: var(--control-border);
+  --el-button-outline-color: var(--control-muted);
+  --el-button-hover-link-text-color: var(--control-text);
+  --el-button-active-color: var(--control-text);
+  --el-button-divide-border-color: var(--control-border);
+  box-shadow: none;
+}
+.el-button.el-button--primary { --control-tone: var(--accent); }
+.el-button.el-button--danger { --control-tone: var(--danger); }
+.el-button.el-button--success { --control-tone: var(--success); }
+.el-button.el-button--warning { --control-tone: var(--warning); }
+.el-button.el-button--info { --control-tone: var(--info); }
+.el-button:is(.el-button--primary, .el-button--danger, .el-button--success, .el-button--warning, .el-button--info) {
+  --el-button-bg-color: color-mix(in srgb, var(--control-tone) 12%, var(--control-bg));
+  --el-button-border-color: color-mix(in srgb, var(--control-tone) 45%, var(--control-border));
+  --el-button-hover-bg-color: color-mix(in srgb, var(--control-tone) 22%, var(--control-bg));
+}
+.el-button:is(.el-button--danger, .el-button--success, .el-button--warning, .el-button--info) {
+  --el-button-text-color: color-mix(in srgb, var(--control-tone) 35%, var(--control-text));
+}
+.el-button:not(.is-circle):not(.is-round) { border-radius: 8px; }
+.el-button[class].is-disabled,
+.el-button[class].is-disabled:is(:hover, :focus, :active) {
+  color: var(--el-button-disabled-text-color);
+  background-color: var(--el-button-disabled-bg-color);
+  border-color: var(--el-button-disabled-border-color);
+  box-shadow: none;
+}
+.el-button.is-text:not(.is-disabled):hover { background-color: var(--control-hover); }
+.el-button.is-text:not(.is-disabled):active { background-color: var(--control-selected); }
+
+.el-radio-button {
+  --el-radio-button-checked-bg-color: var(--control-selected);
+  --el-radio-button-checked-text-color: var(--control-text);
+  --el-radio-button-checked-border-color: var(--control-selected-border);
+  --el-radio-button-disabled-checked-fill: var(--control-hover);
+}
+.el-radio-button__inner { background: var(--control-bg); color: var(--control-text); }
+.el-radio-button__inner:hover { color: var(--control-text); background: var(--control-hover); }
+
+/* Switch tracks and moving thumbs no longer use the library's fixed white/gray. */
+.el-switch {
+  --el-switch-off-color: var(--control-hover);
+  --el-switch-on-color: var(--control-selected);
+  --el-switch-border-color: var(--control-border);
+}
+.el-switch.is-checked .el-switch__core { border-color: var(--control-selected-border); }
+.el-switch .el-switch__core .el-switch__action {
+  background: var(--control-muted);
+  color: var(--control-bg);
+  box-shadow: none;
+}
+.el-switch.is-checked .el-switch__core .el-switch__action {
+  background: var(--accent);
+  color: var(--control-bg);
+}
+.el-switch .el-switch__core .el-switch__inner .is-text { color: var(--control-text); }
+.el-switch:not(.is-disabled):hover .el-switch__core { border-color: var(--control-muted); }
+.el-switch:has(.el-switch__input:focus-visible) .el-switch__core {
+  outline: 2px solid var(--control-muted);
+  outline-offset: 3px;
+}
+
+/* Shared range style for Element Plus sliders, without changing their hit area. */
+.el-slider {
+  --el-slider-main-bg-color: var(--accent);
+  --el-slider-runway-bg-color: var(--control-hover);
+  --el-slider-stop-bg-color: var(--control-bg);
+  --el-slider-disabled-color: var(--control-border);
+}
+.el-slider__button { background: var(--control-thumb); box-shadow: none; }
+.el-slider__button-wrapper:focus-visible .el-slider__button {
+  outline: 2px solid var(--control-muted);
+  outline-offset: 3px;
+}
+.el-slider__runway.is-disabled .el-slider__button { background: var(--control-bg); }
+
+/* Native and Element Plus scrollbar thumbs inherit their local background palette.
+   Existing intentionally hidden tab/dock scrollbars retain their more specific rules. */
+* { scrollbar-color: var(--control-scroll) transparent; scrollbar-width: thin; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--control-scroll);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--control-muted); }
+.profile-list, .status-list, .dl-groups { scrollbar-color: var(--control-scroll) transparent; }
+.profile-list::-webkit-scrollbar-track, .status-list::-webkit-scrollbar-track { background: transparent; }
+.profile-list::-webkit-scrollbar-thumb, .status-list::-webkit-scrollbar-thumb {
+  background: var(--control-scroll);
+  background-clip: padding-box;
+  border-color: transparent;
+}
+.el-scrollbar {
+  --el-scrollbar-bg-color: var(--control-muted);
+  --el-scrollbar-hover-bg-color: var(--control-muted);
+  --el-scrollbar-opacity: .48;
+  --el-scrollbar-hover-opacity: .72;
+}
+
+/* Native toolbar controls use the same quiet surface as library buttons. */
+.browser-action-button, .browser-action-button.custom {
+  color: var(--control-text);
+  background: var(--control-bg);
+  border-color: var(--control-border);
+  box-shadow: none;
+}
+.browser-action-button:hover:not(:disabled),
+.browser-action-button:focus-visible:not(:disabled) {
+  color: var(--control-text);
+  background: var(--control-hover);
+  border-color: var(--control-selected-border);
+  box-shadow: none;
+  transform: none;
+}
+.browser-action-button:active:not(:disabled) { background: var(--control-selected); }
+.overview-category.active {
+  color: var(--control-text);
+  background: var(--control-selected);
+  border-color: var(--control-selected-border);
+  box-shadow: none;
+}
+.new-profile { box-shadow: none; }
+.collapsed-toggle { background: var(--control-bg); border-color: var(--control-border); color: var(--control-text); }
+.collapsed-toggle:hover { background: var(--control-hover); }
+:where(button):focus-visible { outline: 2px solid var(--control-muted); outline-offset: 2px; }
+.win-btn:focus-visible { outline-offset: -3px; }
+.win-btn.win-close:hover { background: var(--danger); color: #fff; }

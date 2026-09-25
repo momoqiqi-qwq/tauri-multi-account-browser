@@ -4,6 +4,7 @@ use std::{
     collections::HashSet,
     sync::{Mutex, OnceLock},
 };
+use tauri::Manager;
 
 mod diagnostics;
 mod downloads;
@@ -89,6 +90,20 @@ const STATUS_SCHEME: &str = "mbstatus";
 /// target 让导航留在账号 WebView —— 结果整个聊天页被图片顶掉，用户丢会话。
 /// 改成回传 mbimage:// 由宿主另开小窗，账号页的网址一动不动。
 const IMAGE_SCHEME: &str = "mbimage";
+
+/// 站点内快捷键回传用的假导航 scheme（v27）。
+/// 焦点通常在账号 WebView 里，宿主 UI 的 keydown 监听收不到按键；账号 WebView
+/// 创建时已关闭 WebView2 的浏览器加速键（见 `disable_browser_accelerator_keys`），
+/// Ctrl+T/W/L、Ctrl+数字、F5 等会以普通 keydown 到达页面，由 KEY_FORWARD_JS
+/// 转发成 `mbkey://press?k=<组合键>`，宿主 on_navigation 拦截后 emit 给主界面。
+const KEY_SCHEME: &str = "mbkey";
+
+/// profile:hotkey 事件负载。id 仅用于排查（哪个账号转发的），宿主始终对当前标签执行动作。
+#[derive(Debug, Clone, Serialize)]
+struct HotkeyEvent {
+    id: String,
+    combo: String,
+}
 
 fn default_fingerprint_guard() -> bool {
     true
@@ -323,6 +338,14 @@ struct ProfileStatus {
     /// 最近一次回答完成时间。
     #[serde(default)]
     answer_finished_at: Option<String>,
+    /// 本轮 AI 生成的开始时间（generating 上升沿记录）。生成期间前端用它实时走表；
+    /// 新一轮上升沿会重置，展示值随之从零重算。
+    #[serde(default)]
+    answer_started_at: Option<String>,
+    /// 最近一轮完整实测的「发送 → 回答完毕」耗时（毫秒），由页面脚本测量并随
+    /// 完成上报携带（d=）。生成中途刷新页面导致的状态复位不会覆盖它。
+    #[serde(default)]
+    answer_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -596,6 +619,7 @@ pub fn run() {
             profiles::hibernate_profile,
             profiles::sync_profile_bounds,
             profiles::set_profile_webview_visible,
+            profiles::focus_main_ui,
             profiles::navigate_profile,
             profiles::browser_action,
             profiles::clear_profile_data,
@@ -624,6 +648,11 @@ pub fn run() {
             // 用户数据保持原样，等升级到支持该数据版本的程序后会自动补齐。
             if let Err(message) = store::migrate_store(&app.handle().clone()) {
                 eprintln!("[schema] {message}");
+            }
+            // 主界面 WebView 同样关闭浏览器加速键：焦点在宿主 UI（侧栏/地址栏）时
+            // 按 F5 / Ctrl+R 不应该重载整个 Vue 外壳，而是转发给当前账号页刷新。
+            if let Some(main) = app.get_webview("main") {
+                webviews::disable_browser_accelerator_keys(&main);
             }
             Ok(())
         })
@@ -1643,6 +1672,91 @@ mod tests {
         );
     }
 
+    /// 代理探测结果由宿主构造，页面字段全是默认值。它必须走只改代理字段的写入路径：
+    /// 若混进 `save_profile_status`，默认值会被当成一次真实的「生成中 → 空闲」下降沿，
+    /// 凭空记下一轮对话的完成时间，还会顺带清掉未读提醒。
+    #[test]
+    fn proxy_result_neither_ends_a_round_nor_clears_unread() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        // 先空闲一次建条目，再进入生成中 —— 上升沿要有"上一条"才成立。
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                answer_ready: true,
+                ..Default::default()
+            },
+        );
+        let before = load_status(&handle, "A").expect("前置状态应已落盘");
+        assert!(
+            before.answer_started_at.is_some(),
+            "前置：上升沿应已记下本轮开始时间"
+        );
+
+        save_profile_proxy_result(
+            &handle,
+            "A",
+            &ProxyTestResult {
+                ok: true,
+                ip: "1.2.3.4".to_string(),
+                region: "广东 深圳".to_string(),
+                isp: "ChinaTelecom".to_string(),
+                error: String::new(),
+                latency_ms: 42,
+                via_proxy: true,
+                endpoint: "http://127.0.0.1:7890".to_string(),
+            },
+        );
+        let after = load_status(&handle, "A").expect("代理结果不应丢掉整条状态");
+        assert!(
+            after.answer_finished_at.is_none(),
+            "测代理不该造出一轮已完成的对话"
+        );
+        assert_eq!(
+            after.answer_started_at, before.answer_started_at,
+            "本轮开始时间不该被代理探测改写"
+        );
+        assert!(after.answer_ready, "测代理不该清掉未读提醒");
+        assert_eq!(after.proxy_ip.as_deref(), Some("1.2.3.4"));
+        assert_eq!(after.proxy_region.as_deref(), Some("广东 深圳"));
+        assert!(after.proxy_tested_at.is_some());
+    }
+
+    /// `load_profiles` 每次导航、每次切标签都会跑。网址都已规范化的账号若仍被判为
+    /// "修过"，就会在热路径上反复全量写盘。
+    #[test]
+    fn repair_all_profile_urls_is_noop_on_normalized_profiles() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        seed_profiles(&handle, &["a", "b"]);
+        let mut profiles = load_profiles(&handle).expect("读取账号失败");
+        // 覆盖两种模式：a 是继承全局主页，b 改成单独设置。
+        profiles[1].url_mode = "custom".to_string();
+        profiles[1].default_url = normalize_url("example.com")
+            .expect("测试网址应合法")
+            .to_string();
+        profiles[1].last_url = normalize_url("https://example.com/chat")
+            .expect("测试网址应合法")
+            .to_string();
+
+        assert!(
+            !repair_all_profile_urls(&handle, &mut profiles),
+            "已规范化的账号不应再次触发修复写盘"
+        );
+    }
+
     #[test]
     fn answer_finished_at_does_not_drift_on_repeated_idle() {
         let app = mock_app();
@@ -1785,6 +1899,175 @@ mod tests {
         );
     }
 
+    // ---- AI 对话计时（v28） ----
+
+    #[test]
+    fn answer_started_at_is_set_on_idle_to_generating_edge() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        // 标签页打开后先有一次空闲上报（真实流程的第一条），才有 previous 可比对。
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        let started = load_status(&handle, "A").unwrap().answer_started_at;
+        assert!(started.is_some(), "generating 上升沿应记下本轮开始时间");
+
+        // 反复上报「仍在生成」不应把开始时间往后推。
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            load_status(&handle, "A").unwrap().answer_started_at,
+            started,
+            "生成期间开始时间不应漂移"
+        );
+    }
+
+    #[test]
+    fn answer_duration_ms_is_taken_from_finish_report() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                answer_duration_ms: Some(5200),
+                ..Default::default()
+            },
+        );
+        let status = load_status(&handle, "A").unwrap();
+        assert_eq!(
+            status.answer_duration_ms,
+            Some(5200),
+            "完成上报携带的实测耗时（发送 → 回答完毕）"
+        );
+        assert!(status.answer_finished_at.is_some());
+        assert!(status.answer_started_at.is_some(), "开始时间保留供展示");
+    }
+
+    #[test]
+    fn answer_duration_ms_survives_idle_report_without_measurement() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        reset_store(&handle);
+        // 第一轮：完整测量。
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                answer_duration_ms: Some(42000),
+                ..Default::default()
+            },
+        );
+        // 生成中途刷新页面：脚本状态复位后补报 g=0，不带 d —— 这不是一轮真实
+        // 完成，不能把刷新间隔当成耗时，也不能清掉上一轮的实测值。
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            load_status(&handle, "A").unwrap().answer_duration_ms,
+            Some(42000),
+            "没带实测值的下降沿应沿用上一轮耗时"
+        );
+
+        // 下一轮真正完成时才更新。
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: true,
+                ..Default::default()
+            },
+        );
+        save_profile_status(
+            &handle,
+            "A",
+            ProfileStatus {
+                answer_generating: false,
+                answer_duration_ms: Some(8000),
+                ..Default::default()
+            },
+        );
+        assert_eq!(load_status(&handle, "A").unwrap().answer_duration_ms, Some(8000));
+    }
+
+    /// 页面脚本与宿主对 AI 计时的契约：开始/结束打点齐全，完成上报必须带 d。
+    #[test]
+    fn status_script_reports_round_trip_duration() {
+        assert!(
+            STATUS_REPORTER_JS.contains("generatingStartedAt = Date.now()"),
+            "开始生成那一刻要打点"
+        );
+        assert!(
+            STATUS_REPORTER_JS.contains("answerEndObservedAt = Date.now()"),
+            "结束按钮消失那一刻要打点（不含 1.2s 确认等待）"
+        );
+        assert!(
+            STATUS_REPORTER_JS.contains("'&d=' + pendingDurationMs"),
+            "完成上报必须携带本轮实测耗时 d"
+        );
+    }
+
     // ---- 图片预览小窗（v25） ----
 
     /// 假导航的解析必须和注入脚本拼出来的完全对上：scheme / host / 编码后的图片地址。
@@ -1859,6 +2142,63 @@ mod tests {
         assert!(
             IMAGE_PREVIEW_JS.contains("__MB_IMG_PATH__"),
             "查看器脚本要留出路径占位符"
+        );
+    }
+
+    /// v28：绕过页面脚本的新窗口请求（如中键点图片链接）也必须转预览小窗。
+    /// 这里的判断口径要和页面内 isImageUrl 一致，两处都测以免改一边漏一边。
+    #[test]
+    fn is_image_url_matches_the_page_side_heuristic() {
+        let image = |raw: &str| is_image_url(&url::Url::parse(raw).unwrap());
+        assert!(image("https://files.chat01.ai/upload/a.png"));
+        assert!(image("https://files.chat01.ai/upload/a.PNG?v=2#x"), "查询串和锚点不影响扩展名判断");
+        assert!(image("https://x.com/a/b.jpeg"));
+        assert!(image("blob:https://chat01.ai/abc-def"));
+        assert!(!image("https://chat01.ai/chat/123"));
+        assert!(!image("https://files.chat01.ai/upload/a.md"));
+        assert!(!image("https://files.chat01.ai/"));
+        assert!(!image("data:image/png;base64,AAAA"), "data: 开不出小窗，交给页面内脚本处理");
+    }
+
+    /// Rust 侧 IMAGE_EXTENSIONS 与页面脚本的正则必须同步；这里把正则原文钉死。
+    #[test]
+    fn image_extension_lists_stay_in_sync_between_rust_and_page_script() {
+        assert!(
+            NEW_WINDOW_PATCH_JS.contains(
+                r"IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico|heic|heif|jfif|tiff?)$/i"
+            ),
+            "页面脚本的图片扩展名正则变了，webviews::IMAGE_EXTENSIONS 必须同步"
+        );
+    }
+
+    // ---- 快捷键回传（v27） ----
+
+    #[test]
+    fn key_scheme_script_and_host_agree_on_contract() {
+        assert_eq!(KEY_SCHEME, "mbkey");
+        assert!(
+            KEY_FORWARD_JS.contains(&format!("{KEY_SCHEME}://press?k=")),
+            "转发脚本要拼 {KEY_SCHEME}://press?k="
+        );
+        assert!(
+            KEY_FORWARD_JS.contains("encodeURIComponent"),
+            "组合键里的 + / 字母必须百分号编码，否则 Url 解析会把 + 当空格"
+        );
+        assert!(
+            KEY_FORWARD_JS.contains("preventDefault"),
+            "转发前必须 preventDefault，否则站点还可能按默认行为处理"
+        );
+    }
+
+    #[test]
+    fn key_scheme_navigation_parses_combo_from_query() {
+        // 脚本 encodeURIComponent("ctrl+shift+tab") 后 URL 里的 + 必须编码成 %2B；
+        // query_map 按表单解码把 %2B 还原回 +，两边必须对上。
+        let url = url::Url::parse("mbkey://press?k=ctrl%2Bshift%2Btab").expect("假导航 URL 应合法");
+        assert_eq!(url.host_str(), Some("press"));
+        assert_eq!(
+            webviews::query_map(&url).get("k").map(String::as_str),
+            Some("ctrl+shift+tab")
         );
     }
 }

@@ -270,7 +270,7 @@ async function ensureIcon(profile: Profile) {
   pendingIconIds.add(profile.id)
   try {
     const dataUrl = await invoke<string | null>('get_profile_icon', { id: profile.id })
-    if (dataUrl) iconCache.value = { ...iconCache.value, [profile.id]: dataUrl }
+    if (dataUrl) iconCache.value[profile.id] = dataUrl
     else failedIconIds.value = new Set([...failedIconIds.value, profile.id])
   } catch {
     failedIconIds.value = new Set([...failedIconIds.value, profile.id])

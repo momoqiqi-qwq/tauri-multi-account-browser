@@ -3,10 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { ElMessage } from 'element-plus'
 import type { DiagnosticCode, Profile, ProfileDiagnostic } from '../types'
+import { useDialogSuppression } from '../lib/suppress'
 
 const visible = defineModel<boolean>({ required: true })
 const props = defineProps<{ profile: Profile | null; error: string }>()
 const emit = defineEmits<{ retry: [id: string]; changed: [] }>()
+
+// 诊断弹窗正是要盖在出问题的账号页上面，不抑制原生网页就会被它盖住。
+useDialogSuppression(() => visible.value)
 
 const info = ref<ProfileDiagnostic | null>(null)
 const busy = ref(false)

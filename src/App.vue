@@ -5,27 +5,33 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { ElMessage } from 'element-plus'
 import ProfileSidebar from './components/ProfileSidebar.vue'
 import StatusSidebar from './components/StatusSidebar.vue'
+import TitleBar from './components/TitleBar.vue'
 import TabStrip from './components/TabStrip.vue'
 import AddressBar from './components/AddressBar.vue'
 import BrowserViewport from './components/BrowserViewport.vue'
+import WebsiteDirectory from './components/WebsiteDirectory.vue'
 import BrowserActionDock from './components/BrowserActionDock.vue'
 import ProfileSettingsDialog from './components/ProfileSettingsDialog.vue'
 import DownloadsDialog from './components/DownloadsDialog.vue'
 import AppPreferencesDialog from './components/AppPreferencesDialog.vue'
 import AccountOverviewDialog from './components/AccountOverviewDialog.vue'
 import AccountToolsDialog from './components/AccountToolsDialog.vue'
+import AccountGeneratorDialog from './components/AccountGeneratorDialog.vue'
+import { ALL_SITES } from './lib/siteDirectory'
 import ProfileDiagnosisDialog from './components/ProfileDiagnosisDialog.vue'
 import { useProfiles } from './composables/useProfiles'
 import { useSettings } from './composables/useSettings'
 import { useTabs } from './composables/useTabs'
 import { isSuppressed, registerSuppressionHandler } from './lib/suppress'
 import { applyUiPreferences, loadUiPreferences, saveUiPreferences } from './lib/uiPreferences'
+import { comboFromEvent, findShortcut, type ShortcutSpec } from './lib/shortcuts'
 import { normalizeProfileUrl } from './lib/profileUrl'
 import type {
   AppSettings,
   CustomToolbarButton,
   DownloadEntry,
   Profile,
+  ProfileIsolationSettings,
   ProfileStatusEventPayload,
   ProxyTestResult,
   UiPreferences,
@@ -42,13 +48,23 @@ const profiles = ref<Profile[]>([])
 const uiPreferences = ref<UiPreferences>(loadUiPreferences())
 applyUiPreferences(uiPreferences.value)
 const viewport = ref<InstanceType<typeof BrowserViewport> | null>(null)
+const addressBarRef = ref<InstanceType<typeof AddressBar> | null>(null)
 const downloadsVisible = ref(false)
 const appSettingsVisible = ref(false)
 const accountOverviewVisible = ref(false)
 const accountToolsVisible = ref(false)
+const accountGeneratorVisible = ref(false)
+const generatorInitialUrl = ref<string | undefined>()
+const websiteDirectoryRef = ref<InstanceType<typeof WebsiteDirectory> | null>(null)
 const diagnosisVisible = ref(false)
 const diagnosisProfile = ref<Profile | null>(null)
 const diagnosisError = ref('')
+const websiteDirectoryVisible = ref(true)
+const directoryOpeningId = ref<string | null>(null)
+const directoryLoading = ref(true)
+const directoryLoadError = ref('')
+const appReady = ref(false)
+const createInitialUrl = ref<string | undefined>()
 /** 两个侧边栏的收起状态，记住用户上一次的选择 */
 const profileSidebarCollapsed = ref(localStorage.getItem('mab-profile-sidebar-collapsed') === '1')
 const statusSidebarCollapsed = ref(localStorage.getItem('mab-status-sidebar-collapsed') === '1')
@@ -72,9 +88,6 @@ const {
   openTabs,
   activeId,
   currentUrl,
-  openedAt: tabOpenedAt,
-  runtimeSeconds: tabRuntimeSeconds,
-  runtimePaused: tabRuntimePaused,
   hibernated: hibernatedTabs,
   pinned: pinnedTabs,
 } = tabs
@@ -95,11 +108,86 @@ const {
   batchBusy,
 } = accounts
 
+/** Directory is a host page, not a new browser session or another account store. */
+function openCreateDialog(url?: string) {
+  createInitialUrl.value = url
+  accounts.openCreateDialog()
+}
+
+async function openAccountGenerator(url?: string) {
+  generatorInitialUrl.value = url
+  accountGeneratorVisible.value = true
+  // Acquire the next dialog's native suppression before releasing the tools dialog's.
+  await nextTick()
+  accountToolsVisible.value = false
+}
+
+function acceptGeneratedProfiles(created: Profile[]) {
+  // The command has already committed. Merge its acknowledged result immediately;
+  // never turn a later refresh failure into a misleading 'creation failed' retry.
+  const merged = new Map(profiles.value.map(profile => [profile.id, profile]))
+  for (const profile of created) merged.set(profile.id, profile)
+  profiles.value = [...merged.values()].sort((a, b) => a.order - b.order)
+}
+
+async function browseGeneratedProfiles() {
+  websiteDirectoryVisible.value = true
+  await nextTick()
+  websiteDirectoryRef.value?.selectSite(ALL_SITES)
+  accountGeneratorVisible.value = false
+}
+
+async function loadDirectoryData(): Promise<boolean> {
+  directoryLoading.value = true
+  directoryLoadError.value = ''
+  try {
+    await Promise.all([accounts.loadProfiles(), settings.loadSettings()])
+    return true
+  } catch (error) {
+    directoryLoadError.value = String(error)
+    return false
+  } finally {
+    directoryLoading.value = false
+  }
+}
+
+async function activateDirectoryProfile(id: string) {
+  if (directoryOpeningId.value || !appReady.value) return
+  directoryOpeningId.value = id
+  try {
+    if (await tabs.activate(id)) {
+      websiteDirectoryVisible.value = false
+      await nextTick()
+      await syncBounds()
+    }
+  } finally {
+    directoryOpeningId.value = null
+  }
+}
+
+function returnToBrowser() {
+  if (activeId.value) void activateDirectoryProfile(activeId.value)
+}
+
+async function createProfileFromEditor(form: ProfileIsolationSettings) {
+  if (directoryOpeningId.value) return
+  if (websiteDirectoryVisible.value) directoryOpeningId.value = '@creating'
+  try {
+    await accounts.createProfile(form)
+    if (!editorVisible.value && !diagnosisVisible.value && activeId.value) {
+      websiteDirectoryVisible.value = false
+    }
+  } finally {
+    directoryOpeningId.value = null
+  }
+}
+
 let unlistenNavigation: UnlistenFn | undefined
 let unlistenStatus: UnlistenFn | undefined
 let unlistenDownload: UnlistenFn | undefined
 let unlistenDownloadBlocked: UnlistenFn | undefined
 let unlistenDownloadGuardBlocked: UnlistenFn | undefined
+let unlistenHotkey: UnlistenFn | undefined
 let resizeObserver: ResizeObserver | undefined
 let autoRefreshTimer: ReturnType<typeof setInterval> | undefined
 let syncBoundsTimer: ReturnType<typeof setTimeout> | undefined
@@ -220,6 +308,77 @@ async function browserAction(action: 'back' | 'forward' | 'reload') {
   await browserActionFor(activeId.value, action)
 }
 
+// ---- 键盘快捷键（v27）----
+// 焦点在宿主 UI 时走 window keydown；焦点在账号网页里时按键由注入脚本经
+// mbkey:// 假导航转发回来（profile:hotkey 事件），两路最终都进 runShortcut。
+function cycleTab(delta: number) {
+  const list = openTabs.value
+  if (list.length < 2) return
+  const current = activeId.value ? list.indexOf(activeId.value) : -1
+  const next = list[(current + delta + list.length) % list.length]
+  if (next) void tabs.activate(next)
+}
+
+async function focusAddressBar() {
+  // 账号 WebView 通常持有原生焦点，先把焦点交回主界面，输入框才能接收输入。
+  try {
+    await invoke('focus_main_ui')
+  } catch {
+    /* 焦点已经在宿主侧时主界面可能尚未创建为独立 WebView，忽略即可 */
+  }
+  addressBarRef.value?.focusUrl()
+}
+
+function runShortcut(spec: ShortcutSpec) {
+  // 弹层打开期间（此时账号 WebView 已被抑制隐藏）不响应全局快捷键，
+  // 避免在对话框底下偷偷切标签、关标签。
+  if (isSuppressed()) return
+  switch (spec.action) {
+    case 'tab-next':
+      cycleTab(1)
+      break
+    case 'tab-prev':
+      cycleTab(-1)
+      break
+    case 'tab-index': {
+      const list = openTabs.value
+      const target = spec.index === 9 ? list[list.length - 1] : list[(spec.index || 1) - 1]
+      if (target && target !== activeId.value) void tabs.activate(target)
+      break
+    }
+    case 'tab-close':
+      if (activeId.value) void tabs.closeTab(activeId.value)
+      break
+    case 'tab-new':
+      openCreateDialog()
+      break
+    case 'address-bar':
+      void focusAddressBar()
+      break
+    case 'reload':
+      void browserAction('reload')
+      break
+    case 'back':
+      void browserAction('back')
+      break
+    case 'forward':
+      void browserAction('forward')
+      break
+    case 'downloads':
+      downloadsVisible.value = true
+      break
+  }
+}
+
+function onHostKeydown(event: KeyboardEvent) {
+  const combo = comboFromEvent(event)
+  if (!combo) return
+  const spec = findShortcut(combo)
+  if (!spec) return
+  event.preventDefault()
+  runShortcut(spec)
+}
+
 async function goHome() {
   const profile = activeId.value ? accounts.profileById(activeId.value) : undefined
   if (!profile) return
@@ -271,6 +430,19 @@ function scheduleSyncBounds() {
   }, 80)
 }
 
+/**
+ * 注册事件监听，失败只让出这一个事件而不抛错。
+ *
+ * 调用点一律用 Promise.all 并行注册：串行 await 时任意一个监听注册失败（或被
+ * 阻塞），后面全部跟着不执行 —— 键盘入口、自动刷新、原生视图边界同步会静默失效。
+ */
+function listenOrNone<T>(
+  event: string,
+  handler: (payload: T) => void,
+): Promise<UnlistenFn | undefined> {
+  return listen<T>(event, (e) => handler(e.payload)).catch(() => undefined)
+}
+
 onMounted(async () => {
   registerSuppressionHandler((suppress) => {
     if (!activeId.value) return
@@ -278,38 +450,48 @@ onMounted(async () => {
       () => undefined,
     )
   })
-  await accounts.loadProfiles()
-  tabs.restoreSession()
-  // 这三项互不依赖，并行加载可明显减少账号较多/历史较长时的首屏等待。
+  const loaded = await loadDirectoryData()
+  if (loaded) tabs.restoreSession()
+  // 状态和下载记录独立加载；主页设置已经随目录账号加载，确保网站归类正确。
   await Promise.all([
     accounts.loadStatuses(),
-    settings.loadSettings(),
     settings.loadDownloadHistory(),
   ])
-  unlistenNavigation = await listen<{ id: string; url: string }>('profile:navigated', (event) => {
-    const { id, url } = event.payload
-    const p = profiles.value.find((item) => item.id === id)
-    if (p) p.last_url = url
-    if (activeId.value === id) currentUrl.value = url
-  })
-  unlistenDownloadBlocked = await listen<string>('profile:download-blocked', (event) => {
-    ElMessage.warning(`已阻止重复下载：${event.payload}`)
-  })
-  unlistenDownloadGuardBlocked = await listen<{ seconds: number; queued: boolean }>('profile:download-guard-blocked', (event) => {
-    ElMessage.warning(event.payload.queued ? `下载处于保护期，已加入队列，将在约 ${event.payload.seconds} 秒后自动继续` : `页面刚打开，已阻止下载；请等待约 ${event.payload.seconds} 秒`)
-  })
-  unlistenStatus = await listen<ProfileStatusEventPayload>('profile:status', (event) => {
-    accounts.applyStatusEvent(event.payload)
-  })
-  unlistenDownload = await listen<DownloadEntry>('profile:download', (event) => {
-    const entry = event.payload
-    settings.pushDownloadEntry(entry)
-    if (entry.success) {
-      ElMessage.success(`下载完成：${entry.file_name}`)
-    } else {
-      ElMessage.error(`下载失败：${entry.file_name}`)
-    }
-  })
+  window.addEventListener('keydown', onHostKeydown)
+  const [nav, blocked, guardBlocked, statusEvent, hotkey, download] = await Promise.all([
+    listenOrNone<{ id: string; url: string }>('profile:navigated', ({ id, url }) => {
+      const p = profiles.value.find((item) => item.id === id)
+      if (p) p.last_url = url
+      if (activeId.value === id) currentUrl.value = url
+    }),
+    listenOrNone<string>('profile:download-blocked', (fileName) => {
+      ElMessage.warning(`已阻止重复下载：${fileName}`)
+    }),
+    listenOrNone<{ seconds: number; queued: boolean }>('profile:download-guard-blocked', (event) => {
+      ElMessage.warning(event.queued ? `下载处于保护期，已加入队列，将在约 ${event.seconds} 秒后自动继续` : `页面刚打开，已阻止下载；请等待约 ${event.seconds} 秒`)
+    }),
+    listenOrNone<ProfileStatusEventPayload>('profile:status', (payload) => {
+      accounts.applyStatusEvent(payload)
+    }),
+    listenOrNone<{ id: string; combo: string }>('profile:hotkey', (event) => {
+      const spec = findShortcut(event.combo)
+      if (spec) runShortcut(spec)
+    }),
+    listenOrNone<DownloadEntry>('profile:download', (entry) => {
+      settings.pushDownloadEntry(entry)
+      if (entry.success) {
+        ElMessage.success(`下载完成：${entry.file_name}`)
+      } else {
+        ElMessage.error(`下载失败：${entry.file_name}`)
+      }
+    }),
+  ])
+  unlistenNavigation = nav
+  unlistenDownloadBlocked = blocked
+  unlistenDownloadGuardBlocked = guardBlocked
+  unlistenStatus = statusEvent
+  unlistenHotkey = hotkey
+  unlistenDownload = download
 
   if (activeId.value) {
     const restored = activeId.value
@@ -323,6 +505,8 @@ onMounted(async () => {
   resizeObserver = new ResizeObserver(() => scheduleSyncBounds())
   const el = viewport.value?.element()
   if (el) resizeObserver.observe(el)
+  appReady.value = true
+  if (websiteDirectoryVisible.value) void invoke('focus_main_ui').catch(() => undefined)
 })
 
 onBeforeUnmount(() => {
@@ -332,6 +516,8 @@ onBeforeUnmount(() => {
   unlistenDownloadGuardBlocked?.()
   unlistenStatus?.()
   unlistenDownload?.()
+  unlistenHotkey?.()
+  window.removeEventListener('keydown', onHostKeydown)
   resizeObserver?.disconnect()
   stopAutoRefresh()
   tabs.stopLifecycle()
@@ -342,103 +528,125 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-shell">
-    <ProfileSidebar
-      :profiles="visibleProfiles"
-      :total="profiles.length"
-      :active-id="activeId"
-      :open-tabs="openTabs"
-      :collapsed="profileSidebarCollapsed"
-      :all-tags="allTags"
-      :batch-busy="batchBusy"
-      v-model:search="searchQuery"
-      v-model:view-mode="viewMode"
-      v-model:active-tag="activeTag"
-      @toggle="toggleProfileSidebar"
-      @open-create="accounts.openCreateDialog"
-      @open-tools="accountToolsVisible = true"
-      @open-settings="accounts.openEditDialog"
-      @activate="tabs.activate"
-      @delete="accounts.deleteProfile"
-      @clear="accounts.clearProfile"
-      @reorder="accounts.reorderProfiles"
-      @move-group="accounts.moveProfileToGroup"
-      @clone="accounts.cloneProfile"
-      @test-proxy="testProxy"
-      @toggle-favorite="accounts.toggleFavorite"
-      @batch="(ids, patch) => accounts.updateBatch(ids, patch, `已修改 ${ids.length} 个账号`)"
-    />
-    <StatusSidebar
-      :profiles="filteredProfiles"
-      :statuses="statuses"
-      :active-id="activeId"
-      :open-tabs="openTabs"
-      :collapsed="statusSidebarCollapsed"
-      :dl-settings="dlSettings"
-      :download-count="downloadHistory.length"
-      :show-account="uiPreferences.showStatusAccount"
-      :show-proxy="uiPreferences.showStatusProxy"
-      :show-ai-usage-time="uiPreferences.showAiUsageTime"
-      @toggle="toggleStatusSidebar"
-      @activate="tabs.activate"
-      @refresh="accounts.refreshStatuses"
-      @save-settings="saveSettings"
-      @open-downloads="downloadsVisible = true"
-    />
-    <main class="main-pane">
-      <TabStrip
-        :profiles="profiles"
-        :open-tabs="openTabs"
-        :opened-at="tabOpenedAt"
-        :runtime-seconds="tabRuntimeSeconds"
-        :runtime-paused="tabRuntimePaused"
-        :hibernated="hibernatedTabs"
-        :pinned="pinnedTabs"
-        :width="uiPreferences.tabWidth"
+    <TitleBar />
+    <div class="app-body">
+      <div class="browser-shell" :inert="websiteDirectoryVisible" :aria-hidden="websiteDirectoryVisible || undefined">
+      <ProfileSidebar
+        :profiles="visibleProfiles"
+        :total="profiles.length"
         :active-id="activeId"
-        :statuses="statuses"
-        :show-ai-status="uiPreferences.showTabAiStatus"
+        :open-tabs="openTabs"
+        :collapsed="profileSidebarCollapsed"
+        :all-tags="allTags"
+        :batch-busy="batchBusy"
+        v-model:search="searchQuery"
+        v-model:view-mode="viewMode"
+        v-model:active-tag="activeTag"
+        @toggle="toggleProfileSidebar"
+        @open-create="openCreateDialog"
+        @open-tools="accountToolsVisible = true"
+        @open-settings="accounts.openEditDialog"
         @activate="tabs.activate"
-        @close="tabs.closeTab"
-        @reorder="tabs.reorder"
-        @pin="tabs.togglePin"
-        @pause-runtime="tabs.toggleRuntimePause"
-        @reset-runtime="tabs.resetRuntime"
-        @create="accounts.openCreateDialog"
+        @delete="accounts.deleteProfile"
+        @clear="accounts.clearProfile"
+        @reorder="accounts.reorderProfiles"
+        @move-group="accounts.moveProfileToGroup"
+        @clone="accounts.cloneProfile"
+        @test-proxy="testProxy"
+        @toggle-favorite="accounts.toggleFavorite"
+        @batch="(ids, patch) => accounts.updateBatch(ids, patch, `已修改 ${ids.length} 个账号`)"
       />
-      <AddressBar
-        v-model="currentUrl"
-        :disabled="!activeId"
-        @navigate="navigate"
-        @back="browserAction('back')"
-        @forward="browserAction('forward')"
-        @reload="browserAction('reload')"
-        @account-overview="openAccountOverview"
-        @settings="appSettingsVisible = true"
+      <StatusSidebar
+        :profiles="filteredProfiles"
+        :statuses="statuses"
+        :active-id="activeId"
+        :open-tabs="openTabs"
+        :collapsed="statusSidebarCollapsed"
+        :dl-settings="dlSettings"
+        :download-count="downloadHistory.length"
+        :show-account="uiPreferences.showStatusAccount"
+        :show-proxy="uiPreferences.showStatusProxy"
+        :show-ai-usage-time="uiPreferences.showAiUsageTime"
+        @toggle="toggleStatusSidebar"
+        @activate="tabs.activate"
+        @refresh="accounts.refreshStatuses"
+        @save-settings="saveSettings"
+        @open-downloads="downloadsVisible = true"
       />
-      <div
-        class="browser-workspace"
-        :class="`dock-${uiPreferences.browserToolbarPosition}`"
-      >
-        <BrowserViewport ref="viewport" :empty="!activeId" @create="accounts.openCreateDialog" />
-        <BrowserActionDock
-          v-if="uiPreferences.browserToolbarEnabled"
+      <main class="main-pane">
+        <TabStrip
+          :profiles="profiles"
+          :open-tabs="openTabs"
+          :hibernated="hibernatedTabs"
+          :pinned="pinnedTabs"
+          :width="uiPreferences.tabWidth"
+          :suspended="websiteDirectoryVisible"
+          :active-id="activeId"
+          :statuses="statuses"
+          :show-ai-status="uiPreferences.showTabAiStatus"
+          @activate="tabs.activate"
+          @close="tabs.closeTab"
+          @reorder="tabs.reorder"
+          @pin="tabs.togglePin"
+          @create="openCreateDialog"
+        />
+        <AddressBar
+          ref="addressBarRef"
+          v-model="currentUrl"
           :disabled="!activeId"
-          :position="uiPreferences.browserToolbarPosition"
-          :compact="uiPreferences.browserToolbarCompact"
-          :items="uiPreferences.browserToolbarItems"
-          :custom-buttons="uiPreferences.customToolbarButtons"
+          @navigate="navigate"
           @back="browserAction('back')"
           @forward="browserAction('forward')"
           @reload="browserAction('reload')"
-          @home="goHome"
-          @copy-url="copyCurrentUrl"
           @account-overview="openAccountOverview"
-          @downloads="downloadsVisible = true"
+          @directory="websiteDirectoryVisible = true"
           @settings="appSettingsVisible = true"
-          @custom="openCustomToolbarButton"
         />
+        <div
+          class="browser-workspace"
+          :class="`dock-${uiPreferences.browserToolbarPosition}`"
+        >
+          <BrowserViewport ref="viewport" :empty="!activeId" @create="openCreateDialog" />
+          <BrowserActionDock
+            v-if="uiPreferences.browserToolbarEnabled"
+            :disabled="!activeId"
+            :position="uiPreferences.browserToolbarPosition"
+            :compact="uiPreferences.browserToolbarCompact"
+            :items="uiPreferences.browserToolbarItems"
+            :custom-buttons="uiPreferences.customToolbarButtons"
+            @back="browserAction('back')"
+            @forward="browserAction('forward')"
+            @reload="browserAction('reload')"
+            @home="goHome"
+            @copy-url="copyCurrentUrl"
+            @account-overview="openAccountOverview"
+            @downloads="downloadsVisible = true"
+            @settings="appSettingsVisible = true"
+            @custom="openCustomToolbarButton"
+          />
+        </div>
+      </main>
       </div>
-    </main>
+      <WebsiteDirectory
+        v-if="websiteDirectoryVisible"
+        ref="websiteDirectoryRef"
+        :profiles="profiles"
+        :global-default-url="dlSettings?.global_default_url || 'https://chat01.ai/'"
+        :active-id="activeId"
+        :open-tabs="openTabs"
+        :loading="directoryLoading || !appReady"
+        :error="directoryLoadError"
+        :opening-id="directoryOpeningId"
+        @activate="activateDirectoryProfile"
+        @create="openCreateDialog"
+        @edit="accounts.openEditDialog"
+        @close="returnToBrowser"
+        @retry="loadDirectoryData"
+        @tools="accountToolsVisible = true"
+        @generator="openAccountGenerator"
+        @settings="appSettingsVisible = true"
+      />
+    </div>
     <AccountOverviewDialog
       v-model="accountOverviewVisible"
       :profiles="profiles"
@@ -455,8 +663,9 @@ onBeforeUnmount(() => {
       :groups="profileGroups"
       :known-tags="allTags"
       :saving="profileSaving"
+      :initial-url="createInitialUrl"
       :global-default-url="dlSettings?.global_default_url || 'https://chat01.ai/'"
-      @create="accounts.createProfile"
+      @create="createProfileFromEditor"
       @update="accounts.updateProfile"
     />
     <AccountToolsDialog
@@ -464,13 +673,23 @@ onBeforeUnmount(() => {
       :profiles="profiles"
       :app-settings="dlSettings"
       @changed="accounts.loadProfiles"
+      @generator="openAccountGenerator()"
+    />
+    <AccountGeneratorDialog
+      v-model="accountGeneratorVisible"
+      :profiles="profiles"
+      :initial-url="generatorInitialUrl"
+      :global-default-url="dlSettings?.global_default_url || 'https://chat01.ai/'"
+      @created="acceptGeneratedProfiles"
+      @refreshed="profiles = $event"
+      @browse="browseGeneratedProfiles"
     />
     <ProfileDiagnosisDialog
       v-model="diagnosisVisible"
       :profile="diagnosisProfile"
       :error="diagnosisError"
       @changed="accounts.loadProfiles"
-      @retry="tabs.activate"
+      @retry="activateDirectoryProfile"
     />
     <DownloadsDialog
       v-model="downloadsVisible"

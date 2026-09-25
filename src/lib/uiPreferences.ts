@@ -105,7 +105,6 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   tabWidth: 'standard',
   tabSleepEnabled: true,
   tabSleepMinutes: 15,
-  runtimeMode: 'current-open',
 }
 
 const themeIds = new Set(THEME_OPTIONS.map((theme) => theme.id))
@@ -131,7 +130,8 @@ export function normalizeUiPreferences(value: Partial<UiPreferences> | null | un
   const tabWidth = value?.tabWidth === 'compact' || value?.tabWidth === 'wide' ? value.tabWidth : 'standard'
   const tabSleepMinutesRaw = Number(value?.tabSleepMinutes)
   const tabSleepMinutes = Number.isFinite(tabSleepMinutesRaw) ? Math.min(1440, Math.max(1, Math.round(tabSleepMinutesRaw))) : 15
-  const runtimeMode = value?.runtimeMode === 'app-total' ? 'app-total' : 'current-open'
+  // v28 迁移：runtimeMode（运行时间模式）已随「标签页时间改为 AI 对话计时」移除，
+  // 旧 localStorage 里残留的键会被 normalize 直接丢弃。
   // v24 迁移：旧键 showStatusUpdatedTime 已从 UiPreferences 类型里移除，这里单独
   // cast 出来读一次，避免污染主类型。
   const legacy = value as (Partial<UiPreferences> & { showStatusUpdatedTime?: unknown }) | undefined
@@ -162,7 +162,6 @@ export function normalizeUiPreferences(value: Partial<UiPreferences> | null | un
     tabWidth,
     tabSleepEnabled: value?.tabSleepEnabled !== false,
     tabSleepMinutes,
-    runtimeMode,
   }
 }
 

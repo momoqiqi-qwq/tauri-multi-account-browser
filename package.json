@@ -1,7 +1,7 @@
 {
   "name": "tauri-multi-account-browser",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.12.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "test:account-generator": "node --test scripts/test-account-generator.mjs",
+    "test:ui-optimizations": "node --test scripts/test-ui-optimizations.mjs",
+    "test:site-directory": "node --test scripts/test-site-directory.mjs",
     "verify:assets": "node scripts/verify-embedded-assets.mjs"
   },
   "dependencies": {

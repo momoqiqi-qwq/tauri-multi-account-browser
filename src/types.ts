@@ -83,6 +83,10 @@ export interface ProfileStatus {
   answer_generating: boolean
   /** 最近一次回答完成时间 */
   answer_finished_at: string | null
+  /** 本轮 AI 生成的开始时间；生成期间标签页计时用它实时走表 */
+  answer_started_at: string | null
+  /** 最近一轮实测的「发送 → 回答完毕」耗时（毫秒） */
+  answer_duration_ms: number | null
 }
 
 /** profile:status 事件负载 */
@@ -264,6 +268,4 @@ export interface UiPreferences {
   tabSleepEnabled: boolean
   /** 进入后台多少分钟后销毁 WebView；标签本身仍保留 */
   tabSleepMinutes: number
-  /** 运行时间显示方式 */
-  runtimeMode: 'current-open' | 'app-total'
 }

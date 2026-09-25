@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, reactive, watch } from 'vue'
 import { acquireWebviewSuppression } from '../lib/suppress'
+import { SHORTCUTS } from '../lib/shortcuts'
 import { BROWSER_TOOLBAR_BUILTINS, THEME_OPTIONS } from '../lib/uiPreferences'
 import type {
   AppSettings,
@@ -185,11 +186,6 @@ function save() {
             <span>标签页宽度</span>
             <el-segmented v-model="uiForm.tabWidth" :options="[{ label: '紧凑', value: 'compact' }, { label: '标准', value: 'standard' }, { label: '宽', value: 'wide' }]" />
             <small>账号较多时建议使用紧凑；宽模式会优先展示更完整的账号名。</small>
-          </label>
-          <label class="settings-field">
-            <span>运行时间模式</span>
-            <el-segmented v-model="uiForm.runtimeMode" :options="[{ label: '本次打开', value: 'current-open' }, { label: '应用累计', value: 'app-total' }]" />
-            <small>“应用累计”在本次应用运行期间累计 WebView 实际运行时间，休眠/手动暂停期间不计时。</small>
           </label>
           <label class="settings-switch-row settings-inline-switch">
             <span><strong>后台标签页自动休眠</strong><small>销毁长期不用的后台 WebView，标签和登录数据保留；切回时自动重建。</small></span>
@@ -402,6 +398,24 @@ function save() {
             <el-input v-model="dlForm.ai_exts" placeholder="md,txt,csv,docx,pdf,png,zip" />
             <small>逗号分隔；留空表示允许全部扩展名。启用白名单后，没有可识别扩展名或扩展名不在列表中的链接不会自动下载。</small>
           </label>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="快捷键">
+        <div class="settings-section">
+          <div class="settings-section-head">
+            <div><strong>键盘快捷键</strong><small>无论焦点在宿主界面还是网页里都会生效</small></div>
+          </div>
+          <div class="shortcut-list">
+            <div v-for="item in SHORTCUTS" :key="item.combo" class="shortcut-row">
+              <kbd>{{ item.keys }}</kbd>
+              <span>{{ item.label }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="settings-note-card secondary">
+          <strong>与浏览器行为的差异</strong>
+          <p>应用接管了 WebView2 的浏览器保留键（Ctrl+T/W/L、Ctrl+1-9、F5 等），网页获得焦点时这些组合会转发给宿主执行；因此 WebView2 自带的查找（Ctrl+F）、打印（Ctrl+P）、整页缩放（Ctrl+加减号）不再弹出，Ctrl+C/V/X/A 等文本编辑快捷键不受影响。</p>
         </div>
       </el-tab-pane>
 

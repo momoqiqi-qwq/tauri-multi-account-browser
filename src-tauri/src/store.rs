@@ -23,11 +23,7 @@ pub(crate) fn load_profiles<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<Profil
 
     // 旧数据里 default_url / last_url 为空或损坏时，过去会在创建 WebView 时直接失败，
     // 用户表现为“账号点不开”。现在读取时自动迁移到可用网址，并持久化修复结果。
-    let mut repaired = false;
-    for profile in &mut profiles {
-        repaired |= repair_profile_urls(app, profile);
-    }
-    if repaired {
+    if repair_all_profile_urls(app, &mut profiles) {
         store.set(
             STORE_KEY,
             serde_json::to_value(&profiles).map_err(|e| e.to_string())?,
@@ -129,11 +125,7 @@ pub(crate) fn migrate_v1_to_v2<R: Runtime>(app: &AppHandle<R>) -> Result<(), Str
 pub(crate) fn migrate_v0_to_v1<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     // 账号：修正空/损坏的 default_url 与 last_url，并规范化 url_mode。
     let mut profiles = load_profiles(app)?;
-    let mut changed = false;
-    for profile in &mut profiles {
-        changed |= repair_profile_urls(app, profile);
-    }
-    if changed {
+    if repair_all_profile_urls(app, &mut profiles) {
         save_profiles(app, &profiles)?;
     }
 

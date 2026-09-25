@@ -1,0 +1,36 @@
+/* Host-only motion: never animate native WebView geometry or delay its show/hide. */
+:root {
+  --motion-fast: 120ms;
+  --motion-enter: 160ms;
+  --motion-ease: cubic-bezier(.2, .7, .2, 1);
+}
+/* Width interpolation triggers repeated native bounds IPC. Commit geometry immediately. */
+.sidebar, .status-sidebar { transition: background-color var(--motion-fast) ease; }
+/* Hidden host controls must not keep decorative animations running under the directory. */
+.browser-shell[inert] *, .browser-shell[inert] *::before, .browser-shell[inert] *::after {
+  animation-play-state: paused !important;
+}
+:root[data-animations="off"] *,
+:root[data-animations="off"] *::before,
+:root[data-animations="off"] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .tab-ai-loading i, .tab-dot.state-generating { opacity: 1; }
+}
+/* Removing transitions alone still leaves hover jumps; retain color/focus feedback only. */
+:root[data-animations="off"] :is(.website-directory__icon, .profile-card, .status-card, .account-overview-row, .browser-action-button) {
+  transform: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.website-directory__icon, .profile-card, .status-card, .account-overview-row, .browser-action-button) {
+    transform: none !important;
+  }
+}

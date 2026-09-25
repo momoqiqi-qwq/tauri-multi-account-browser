@@ -2,8 +2,10 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { MagicStick } from '@element-plus/icons-vue'
 import type { AppSettings, Profile } from '../types'
 import { normalizeProfileUrl } from '../lib/profileUrl'
+import { useDialogSuppression } from '../lib/suppress'
 
 interface ProfileTemplate {
   id: string
@@ -21,7 +23,10 @@ interface ProfileTemplate {
 
 const visible = defineModel<boolean>({ required: true })
 const props = defineProps<{ profiles: Profile[]; appSettings: AppSettings | null }>()
-const emit = defineEmits<{ changed: [] }>()
+const emit = defineEmits<{ changed: []; generator: [] }>()
+
+// 860px 宽的全屏遮罩，不抑制原生网页就会被账号页盖住。
+useDialogSuppression(() => visible.value)
 
 /** v14 旧版把模板存在 localStorage；首次加载时一次性搬进 Rust store。 */
 const LEGACY_STORAGE_KEY = 'mab-profile-templates-v14'
@@ -265,7 +270,11 @@ async function exportToFile() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="账号管理工具 · v14" width="860px" append-to-body>
+  <el-dialog v-model="visible" title="账号管理工具" width="860px" append-to-body>
+    <div class="tools-generator-entry">
+      <div><strong>多网站 × 已有账号配置</strong><p>在独立的三步向导中预览并批量创建新容器，不复制登录态。</p></div>
+      <el-button :icon="MagicStick" type="primary" plain @click="emit('generator')">多账号生成器</el-button>
+    </div>
     <el-tabs>
       <el-tab-pane label="账号模板">
         <el-form label-width="110px">
@@ -341,3 +350,11 @@ async function exportToFile() {
     </el-dialog>
   </el-dialog>
 </template>
+
+<style scoped>
+.tools-generator-entry { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 18px 20px; margin-bottom: 24px; border: 1px solid var(--el-border-color-lighter); border-radius: 12px; background: var(--el-fill-color-light); }
+.tools-generator-entry strong { color: var(--el-text-color-primary); font-size: 14px; font-weight: 500; }
+.tools-generator-entry p { margin: 7px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.7; }
+.tools-generator-entry .el-button { flex: none; }
+@media (max-width: 650px) { .tools-generator-entry { flex-wrap: wrap; } }
+</style>

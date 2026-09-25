@@ -190,20 +190,31 @@ pub(crate) async fn pick_export_file(
 }
 
 /// 读取导入文件内容。走 Rust 侧 std::fs，不经过前端 fs 插件，因此不受权限 scope 限制。
+///
+/// async + 阻塞线程池：同步命令在主线程读用户选中的文件，文件在网盘 / U 盘上时
+/// 界面会一直冻到读完。
 #[tauri::command]
-pub(crate) fn read_import_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))
+pub(crate) async fn read_import_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-/// 写出导出内容。
+/// 写出导出内容。理由同 `read_import_file`。
 #[tauri::command]
-pub(crate) fn write_export_file(path: String, content: String) -> Result<(), String> {
-    if let Some(parent) = Path::new(&path).parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
+pub(crate) async fn write_export_file(path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = Path::new(&path).parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
+            }
         }
-    }
-    fs::write(&path, content).map_err(|e| format!("写入文件失败：{e}"))
+        fs::write(&path, content).map_err(|e| format!("写入文件失败：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// CSV 文本 -> 导入草稿。前端拿到草稿后可在导入前预览。

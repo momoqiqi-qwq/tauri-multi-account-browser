@@ -33,7 +33,9 @@ pub(crate) fn load_download_ledger(app: &AppHandle) -> DownloadLedger {
             ledger.names.insert(name);
         }
     }
-    if ledger.names.len() != before_names || store.get(DOWNLOAD_LEDGER_KEY).is_none() {
+    // `has` 只做一次 key 查找；这里若用 `get`，会把整个下载账本（随历史无限增长）
+    // 深拷贝一遍再丢掉 —— 而每次页面加载、每次切标签都会走到这行。
+    if ledger.names.len() != before_names || !store.has(DOWNLOAD_LEDGER_KEY) {
         if let Ok(value) = serde_json::to_value(&ledger) {
             store.set(DOWNLOAD_LEDGER_KEY, value);
             let _ = store.save();
@@ -42,8 +44,11 @@ pub(crate) fn load_download_ledger(app: &AppHandle) -> DownloadLedger {
     ledger
 }
 
-pub(crate) fn download_seen(app: &AppHandle, url: &Url) -> bool {
-    let ledger = load_download_ledger(app);
+/// 判断该网址（或其推断文件名）是否已经下载过。
+///
+/// 账本由调用方传入：调用点本来就已经读过一次账本，再读一次会把整份
+/// 下载历史（store 里的 `download_history` + 账本）重新深拷贝并反序列化。
+pub(crate) fn download_seen(ledger: &DownloadLedger, url: &Url) -> bool {
     ledger.urls.contains(&normalized_download_url(url))
         || inferred_download_name(url)
             .map(|n| ledger.names.contains(&n))
@@ -422,89 +427,53 @@ pub(crate) fn delete_download(app: AppHandle, path: String) -> Result<(), String
 }
 
 /// 打开系统原生文件夹选择器，供“移动下载文件”直接选择目标目录。
+///
+/// 必须是 async 命令：同步命令跑在主线程，而这里要等用户在一个模态对话框里选完
+/// 才返回 —— 整个选择期间界面完全不响应，看起来像程序卡死。走 tauri-plugin-dialog
+/// 后跨平台由插件处理，不再需要为每个系统手写一遍外部进程。
 #[tauri::command]
-pub(crate) fn pick_move_directory(initial_dir: String) -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let script = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '选择移动目标文件夹'
-$dialog.ShowNewFolderButton = $true
-if ($args.Count -gt 0 -and (Test-Path -LiteralPath $args[0] -PathType Container)) {
-  $dialog.SelectedPath = $args[0]
-}
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Write($dialog.SelectedPath)
-}
-"#;
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-STA", "-Command", script])
-            .arg(initial_dir.trim())
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("无法打开文件夹选择器：{e}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-        }
-        let selected = String::from_utf8_lossy(&output.stdout)
-            .trim_start_matches('\u{feff}')
-            .trim()
-            .to_string();
-        Ok((!selected.is_empty()).then_some(selected))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("osascript")
-            .args([
-                "-e",
-                "set chosenFolder to choose folder with prompt \"选择移动目标文件夹\"",
-                "-e",
-                "POSIX path of chosenFolder",
-            ])
-            .output()
-            .map_err(|e| format!("无法打开文件夹选择器：{e}"))?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!selected.is_empty()).then_some(selected));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let mut command = Command::new("zenity");
-        command.args([
-            "--file-selection",
-            "--directory",
-            "--title=选择移动目标文件夹",
-        ]);
-        let initial = initial_dir.trim();
-        if !initial.is_empty() {
-            command.arg(format!("--filename={}/", initial.trim_end_matches('/')));
-        }
-        let output = command
-            .output()
-            .map_err(|e| format!("无法打开文件夹选择器：{e}"))?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!selected.is_empty()).then_some(selected));
+pub(crate) async fn pick_move_directory(
+    app: AppHandle,
+    initial_dir: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let builder = app.dialog().file();
+    let initial = initial_dir.trim();
+    let builder = if !initial.is_empty() && Path::new(initial).is_dir() {
+        builder.set_directory(initial)
+    } else {
+        builder
+    };
+    match builder.blocking_pick_folder() {
+        Some(path) => Ok(Some(
+            path.into_path()
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string(),
+        )),
+        None => Ok(None),
     }
 }
 
 #[tauri::command]
-pub(crate) fn move_download(
+pub(crate) async fn move_download(
     app: AppHandle,
     path: String,
     destination_dir: String,
 ) -> Result<String, String> {
-    let source = PathBuf::from(&path);
+    // 跨卷移动会退化成整文件复制，几个 G 的包能按秒计，放到阻塞线程池里做。
+    let source_path = path.clone();
+    let new_path = tauri::async_runtime::spawn_blocking(move || {
+        move_file_on_disk(&source_path, &destination_dir)
+    })
+    .await
+    .map_err(|e| format!("移动任务被中断：{e}"))??;
+    update_download_history_path(&app, &path, Some(&new_path))?;
+    Ok(new_path)
+}
+
+fn move_file_on_disk(path: &str, destination_dir: &str) -> Result<String, String> {
+    let source = PathBuf::from(path);
     if !source.exists() || !source.is_file() {
         return Err("文件已被移动或删除".to_string());
     }
@@ -540,9 +509,7 @@ pub(crate) fn move_download(
             .map_err(|copy_err| format!("移动失败：{rename_err}；复制也失败：{copy_err}"))?;
         fs::remove_file(&source).map_err(|e| format!("复制成功但删除原文件失败：{e}"))?;
     }
-    let new_path = target.to_string_lossy().to_string();
-    update_download_history_path(&app, &path, Some(&new_path))?;
-    Ok(new_path)
+    Ok(target.to_string_lossy().to_string())
 }
 
 /// 在资源管理器里定位已下载的文件（Windows：explorer /select）。

@@ -6,6 +6,7 @@
 
 use chrono::Utc;
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
@@ -59,31 +60,102 @@ pub(crate) fn effective_profile_home_url<R: Runtime>(app: &AppHandle<R>, profile
     normalize_url(&profile.default_url).unwrap_or_else(|_| normalized_global_default_url(app))
 }
 
-pub(crate) fn repair_profile_urls<R: Runtime>(app: &AppHandle<R>, profile: &mut Profile) -> bool {
+/// 账号两个网址的一次性解析结果：既用来判断要不要全局兜底，也直接是写回的规范值。
+struct ProfileUrlScan {
+    /// `default_url` 的规范值；`None` 表示它不可用，需要全局兜底。
+    default_url: Option<Url>,
+    /// `last_url` 的规范值；空白与解析失败都是 `None`，两者同样回落到账号主页。
+    last_url: Option<Url>,
+    /// 是否必须读到「全局默认主页」才能算出结果。
+    needs_fallback: bool,
+}
+
+/// 注意继承模式：即使 `default_url` 合法，继承账号的 `default_url` 仍会被兜底值
+/// 覆盖一次，所以它算需要兜底。
+fn scan_profile_urls(profile: &Profile) -> ProfileUrlScan {
+    let default_url = normalize_url(&profile.default_url).ok();
+    let last_url = if profile.last_url.trim().is_empty() {
+        None
+    } else {
+        normalize_url(&profile.last_url).ok()
+    };
+    ProfileUrlScan {
+        needs_fallback: profile.url_mode == "inherit"
+            || default_url.is_none()
+            || last_url.is_none(),
+        default_url,
+        last_url,
+    }
+}
+
+/// 批量修复，只在确实有账号需要兜底时解析一次全局设置。
+///
+/// 这是 `load_profiles` 的必经路径，而 `load_profiles` 每次导航、每次标签切换
+/// 都会跑；按账号逐个解析设置会让启动变成 O(账号数) 次全量反序列化 + 全局写锁。
+pub(crate) fn repair_all_profile_urls<R: Runtime>(
+    app: &AppHandle<R>,
+    profiles: &mut [Profile],
+) -> bool {
+    // 每个账号的两个网址只解析一次：解析结果既用来判断要不要全局兜底，
+    // 也直接就是修复后写回的规范值。
+    let scans: Vec<ProfileUrlScan> = profiles.iter().map(scan_profile_urls).collect();
+    let fallback: Cow<'_, str> = if scans.iter().any(|scan| scan.needs_fallback) {
+        Cow::Owned(normalized_global_default_url(app).to_string())
+    } else {
+        // 数据都已规范化时这个值不会被读到，借用内置默认网址即可，
+        // 既不必读一次 store，也不必分配。
+        Cow::Borrowed(DEFAULT_PROFILE_URL)
+    };
+    let mut repaired = false;
+    for (profile, scan) in profiles.iter_mut().zip(scans) {
+        repaired |= repair_profile_urls_with(&fallback, profile, scan);
+    }
+    repaired
+}
+
+fn repair_profile_urls_with(
+    fallback: &str,
+    profile: &mut Profile,
+    scan: ProfileUrlScan,
+) -> bool {
     let mut changed = false;
     if profile.url_mode != "inherit" && profile.url_mode != "custom" {
         profile.url_mode = "custom".to_string();
         changed = true;
     }
-    let fallback = normalized_global_default_url(app).to_string();
-    let default_url = normalize_url(&profile.default_url)
-        .map(|u| u.to_string())
-        .unwrap_or_else(|_| fallback.clone());
-    if profile.default_url != default_url {
-        profile.default_url = default_url;
-        changed = true;
+    match scan.default_url.as_ref().map(|url| url.as_str()) {
+        // 规范值与现有值逐字相同 ⇒ 不写、不记改动，这是存量账号的常态。
+        Some(normalized) if normalized == profile.default_url => {}
+        Some(normalized) => {
+            profile.default_url = normalized.to_string();
+            changed = true;
+        }
+        None => {
+            if profile.default_url != fallback {
+                profile.default_url = fallback.to_string();
+                changed = true;
+            }
+        }
     }
-    let home = effective_profile_home_url(app, profile).to_string();
-    let last_url = if profile.last_url.trim().is_empty() {
-        home.clone()
-    } else {
-        normalize_url(&profile.last_url)
-            .map(|u| u.to_string())
-            .unwrap_or(home)
-    };
-    if profile.last_url != last_url {
-        profile.last_url = last_url;
-        changed = true;
+    // 上一步保证 default_url 已是可用网址，因此非继承模式的账号主页就是它本身，
+    // 无需再回落到全局主页。
+    match scan.last_url.as_ref().map(|url| url.as_str()) {
+        Some(normalized) if normalized == profile.last_url => {}
+        Some(normalized) => {
+            profile.last_url = normalized.to_string();
+            changed = true;
+        }
+        None => {
+            let home = if profile.url_mode == "inherit" {
+                fallback.to_string()
+            } else {
+                profile.default_url.clone()
+            };
+            if profile.last_url != home {
+                profile.last_url = home;
+                changed = true;
+            }
+        }
     }
     changed
 }
@@ -851,15 +923,132 @@ fn open_image_window(app: &AppHandle, profile_id: &str, raw_url: &str, hint: &st
     }
 }
 
+/// 与 NEW_WINDOW_PATCH_JS 的 IMAGE_EXT_RE 对齐的图片扩展名表（不含点，全小写）。
+/// JS 正则里的 `jpe?g` / `tiff?` 在这里展开成枚举值，单测会校验两边不缺项。
+const IMAGE_EXTENSIONS: [&str; 14] = [
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico", "heic", "heif", "jfif", "tif",
+    "tiff",
+];
+
+/// 判断一个 URL 是不是「点开就渲染成图片文档」的地址：blob: 一定是（会话内上传 /
+/// 生成物），http(s) 看路径最后一段的扩展名。口径必须与页面内 NEW_WINDOW_PATCH_JS
+/// 的 isImageUrl 完全一致 —— 那边接管用户左键点击，这里兜住绕过页面脚本的新窗口
+/// 请求（典型：中键点击），两边共同保证点图片只弹预览小窗、账号页网址不动。
+pub(crate) fn is_image_url(url: &Url) -> bool {
+    match url.scheme() {
+        "blob" => true,
+        "http" | "https" => {
+            let last = url.path().rsplit('/').next().unwrap_or("");
+            match last.rsplit_once('.') {
+                Some((_, ext)) => IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn fingerprint_script(id: &str) -> String {
     FINGERPRINT_GUARD_JS.replace("__SEED__", &profile_seed(id).to_string())
+}
+
+/// 把站点内按下的快捷键回传给宿主（v27）。
+///
+/// 焦点通常在账号 WebView 里，宿主 UI 的 keydown 监听收不到按键。账号 WebView
+/// 创建时已用 `disable_browser_accelerator_keys` 关闭 WebView2 的浏览器加速键，
+/// Ctrl+T/W/L、Ctrl+数字、F5、Alt+←/→ 等会以普通 keydown 到达页面；本脚本把
+/// 白名单内的组合 preventDefault 后转成 `mbkey://press?k=<组合>` 假导航 —— 与
+/// mbstatus:// / mbimage:// 相同的套路，宿主在 on_navigation 拦截后 emit 给主
+/// 界面，页面本身不动。组合键归一化顺序固定为 ctrl → alt → shift，与前端
+/// `src/lib/shortcuts.ts` 的 `comboFromEvent` 必须保持一致。
+pub(crate) const KEY_FORWARD_JS: &str = r#"
+(function () {
+  if (window.__mbKeyForwardInstalled) return;
+  try { Object.defineProperty(window, '__mbKeyForwardInstalled', { value: true }); } catch (e) { return; }
+  var FORWARD_KEYS = { tab: 1, w: 1, t: 1, l: 1, r: 1, j: 1, f5: 1, arrowleft: 1, arrowright: 1 };
+  function comboOf(e) {
+    if (e.isComposing) return null;               // 输入法组合中的按键一律放行
+    var key = (e.key || '').toLowerCase();
+    var ctrl = e.ctrlKey || e.metaKey;
+    var alt = e.altKey;
+    var digit = /^[1-9]$/.test(key);
+    if (!ctrl && !alt && key !== 'f5') return null;
+    if (digit) {
+      if (!ctrl || alt) return null;              // 数字只在 Ctrl 下转发（Ctrl+1..9 切标签）
+    } else if (!FORWARD_KEYS[key]) {
+      return null;                                // 其余键不转发，留给站点自己用
+    } else if (key === 'arrowleft' || key === 'arrowright') {
+      if (!alt || ctrl) return null;              // 方向键只在 Alt 下转发（前进/后退）
+    } else if (alt) {
+      return null;                                // 其它键不与 Alt 组合（Alt+字母是站点菜单助记符）
+    }
+    if (e.shiftKey && key !== 'tab') return null; // Shift 只参与 Ctrl+Shift+Tab
+    if (ctrl && alt) return null;                 // AltGr 在部分布局等同 Ctrl+Alt，一律放行给输入法
+    var parts = [];
+    if (ctrl) parts.push('ctrl');
+    if (alt) parts.push('alt');
+    if (e.shiftKey) parts.push('shift');
+    parts.push(key);
+    return parts.join('+');
+  }
+  document.addEventListener('keydown', function (e) {
+    var combo = null;
+    try { combo = comboOf(e); } catch (err) { return; }
+    if (!combo) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    try { location.href = 'mbkey://press?k=' + encodeURIComponent(combo); } catch (err) {}
+  }, true);
+})();
+"#;
+
+/// 关闭 WebView2 的"浏览器专属加速键"（Ctrl+F/F3 查找、Ctrl+P 打印、Ctrl+R/F5
+/// 重载、Ctrl+±/0 缩放、F12 DevTools、后退/前进等功能键）。
+///
+/// 不关的话这批键会被 WebView2 的浏览器层吞掉，页面 JS 根本收不到 keydown，
+/// KEY_FORWARD_JS 就无从转发，宿主快捷键在网页获得焦点时全部失效。文本编辑类
+/// （Ctrl+C/V/X/A/Z、Home/End、PgUp/PgDn）不受该设置影响，输入不受干扰。
+/// 被禁掉的原生行为由应用自己接管：F5/Ctrl+R → 宿主刷新（含位置恢复）、
+/// Alt+←/→ → 宿主前进后退、Ctrl+±/0 → 每账号缩放。Ctrl+F（页内查找）、
+/// Ctrl+P（打印）暂无替代，属已知取舍。
+///
+/// 仅 Windows/WebView2 有效；WebView2 Runtime < 92 时该调用无效果（旧运行时
+/// 也不影响其它功能）。设置在 WebView 创建后立即下发，作用于所有后续导航。
+pub(crate) fn disable_browser_accelerator_keys<R: Runtime>(webview: &tauri::Webview<R>) {
+    #[cfg(target_os = "windows")]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows_core::Interface;
+        let _ = webview.with_webview(move |platform| {
+            let controller = platform.controller();
+            let Ok(core) = (unsafe { controller.CoreWebView2() }) else {
+                return;
+            };
+            let Ok(settings) = (unsafe { core.Settings() }) else {
+                return;
+            };
+            let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() else {
+                return;
+            };
+            unsafe {
+                if let Err(err) = settings3.SetAreBrowserAcceleratorKeysEnabled(false) {
+                    eprintln!("[hotkey] 关闭浏览器加速键失败：{err}");
+                }
+            }
+        });
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = webview;
+    }
 }
 
 /// 注入每个账号 WebView 的状态抓取脚本：在 chat01.ai 页面里用启发式规则
 /// （DOM 文本 + localStorage）提取积分和登录账号，然后通过一次会被后端
 /// 取消的 mbstatus:// 假导航把数据带出来。chat01.ai 是客户端渲染的 SPA，
 /// 无法依赖固定选择器，所以采取多策略扫描并只在结果变化时上报。
-const STATUS_REPORTER_JS: &str = r#"
+/// （pub(crate) 仅为让单测钉住「AI 计时上报」的脚本契约。）
+pub(crate) const STATUS_REPORTER_JS: &str = r#"
 (function () {
   if (window.__mbStatusInstalled) return;
   try { Object.defineProperty(window, '__mbStatusInstalled', { value: true }); } catch (e) { return; }
@@ -981,6 +1170,13 @@ const STATUS_REPORTER_JS: &str = r#"
   var answerReady = false;
   var answerFinishTimer = 0;
   var answerCheckTimer = 0;
+  // v28：一轮 AI 对话的计时。开始 = 停止按钮出现（用户刚发送）；结束 = 停止按钮
+  // 稳定消失（answerEndObservedAt 记消失的观察时刻，不含 1.2s 确认等待）。
+  // 确认完成那一刻算出耗时，随完成上报以 d=<毫秒> 带给宿主，标签页上的
+  // "AI 计时" 用它展示；生成期间宿主用 started_at（Rust 上升沿时钟）实时走表。
+  var generatingStartedAt = 0;
+  var answerEndObservedAt = 0;
+  var pendingDurationMs = 0;
 
   function hasGeneratingIndicator() {
     try {
@@ -1011,17 +1207,23 @@ const STATUS_REPORTER_JS: &str = r#"
       if (!answerGenerating) {
         answerGenerating = true;
         answerReady = false;
+        generatingStartedAt = Date.now();
         try { report(true); } catch (e) {}
       }
       return;
     }
     if (!answerGenerating || answerFinishTimer) return;
     // 结束按钮偶尔会因前端重渲染短暂消失，稳定 1.2 秒后才判定回答完成。
+    answerEndObservedAt = Date.now();
     answerFinishTimer = setTimeout(function () {
       answerFinishTimer = 0;
       if (hasGeneratingIndicator()) { scheduleAnswerCheck(); return; }
       if (!answerGenerating) return;
       answerGenerating = false;
+      if (generatingStartedAt > 0) {
+        pendingDurationMs = Math.max(0, answerEndObservedAt - generatingStartedAt);
+        generatingStartedAt = 0;
+      }
       // 只有后台账号才需要“回答完成”提醒；当前正在看的账号不额外打扰。
       answerReady = !profileActive;
       try { report(true); } catch (e) {}
@@ -1129,6 +1331,12 @@ const STATUS_REPORTER_JS: &str = r#"
       '&e=' + encodeURIComponent(email) +
       '&r=' + (answerReady ? '1' : '0') +
       '&g=' + (answerGenerating ? '1' : '0');
+    // d 只随「回答完成」的那次上报携带一次；宿主没收到 d 就沿用上一轮的实测值，
+    // 这样生成中途刷新页面（脚本状态复位补报 g=0）不会被误当成一轮新耗时。
+    if (pendingDurationMs > 0) {
+      payload += '&d=' + pendingDurationMs;
+      pendingDurationMs = 0;
+    }
     if (!force && payload === lastPayload) return;
     lastPayload = payload;
     try { location.href = 'mbstatus://report?' + payload; } catch (e) {}
@@ -1436,6 +1644,11 @@ pub(crate) fn create_profile_webview(
                             updated_at: Some(Utc::now().to_rfc3339()),
                             answer_ready: query.get("r").map(|v| v == "1").unwrap_or(false),
                             answer_generating: query.get("g").map(|v| v == "1").unwrap_or(false),
+                            // 只有「回答完成」上报才带 d（本轮实测毫秒数）；其余上报
+                            // 缺省，由 save_profile_status 沿用上一轮的实测值。
+                            answer_duration_ms: query
+                                .get("d")
+                                .and_then(|v| v.trim().parse::<u64>().ok()),
                             ..Default::default()
                         }),
                     );
@@ -1465,6 +1678,26 @@ pub(crate) fn create_profile_webview(
                 }
                 return false;
             }
+            // 注入脚本把站点内按下的快捷键用 mbkey://press?k=<组合> 回传给宿主。
+            // 同样取消导航：账号页的网址一动不动，动作由主界面统一执行。
+            if url.scheme() == KEY_SCHEME {
+                if url.host_str() == Some("press") {
+                    let combo = query_map(url)
+                        .get("k")
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default();
+                    if !combo.is_empty() {
+                        let _ = app_for_event.emit(
+                            "profile:hotkey",
+                            HotkeyEvent {
+                                id: id_for_event.clone(),
+                                combo,
+                            },
+                        );
+                    }
+                }
+                return false;
+            }
             if let Ok(mut started_at) = download_guard_for_navigation.lock() {
                 *started_at = Instant::now();
             }
@@ -1486,6 +1719,8 @@ pub(crate) fn create_profile_webview(
         // 状态抓取脚本对每个账号无条件注入（不受指纹防护等开关影响）。
         .initialization_script(STATUS_REPORTER_JS)
         .initialization_script(NEW_WINDOW_PATCH_JS)
+        // 快捷键回传脚本同样无条件注入；白名单外的按键原样放行给站点。
+        .initialization_script(KEY_FORWARD_JS)
         // 创建 WebView 后立刻 push 一次可能撞上文档尚未初始化；每次页面加载
         // 都重新下发当前配置，确保刷新、登录重定向后自动下载仍然生效。
         .on_page_load(move |webview, _payload| {
@@ -1566,8 +1801,11 @@ pub(crate) fn create_profile_webview(
                 .map(|name| name.to_string_lossy().trim().to_ascii_lowercase())
                 .filter(|name| !name.is_empty());
             let ledger = load_download_ledger(&app_for_download);
-            let duplicate = download_seen(&app_for_download, &url)
-                || suggested_name.as_ref().map(|name| ledger.names.contains(name)).unwrap_or(false);
+            let duplicate = download_seen(&ledger, &url)
+                || suggested_name
+                    .as_ref()
+                    .map(|name| ledger.names.contains(name))
+                    .unwrap_or(false);
             if duplicate {
                 let name = suggested_name
                     .or_else(|| inferred_download_name(&url))
@@ -1615,6 +1853,22 @@ pub(crate) fn create_profile_webview(
     let app_for_new_window = app.clone();
     let id_for_new_window = profile.id.clone();
     builder = builder.on_new_window(move |url, _features| {
+        // 图片链接（含 blob:）一律转成独立预览小窗后拒绝新窗口请求，账号页原地
+        // 不动。页面内 NEW_WINDOW_PATCH_JS 已接管左键点击，这里兜住绕过页面脚本
+        // 的路径（典型：中键点击图片链接、target=_blank 的直链图片），保证
+        // 「点图片只弹一个小窗、原网址永远不变」。
+        if is_image_url(&url) {
+            // 与 mbimage:// 分支同理：在 WebView2 回调里同步建窗会和它自己的消息
+            // 处理打架，丢到主线程下一拍执行。
+            let app_for_image = app_for_new_window.clone();
+            let handle_for_image = app_for_image.clone();
+            let id_for_image = id_for_new_window.clone();
+            let target = url.to_string();
+            let _ = app_for_image.run_on_main_thread(move || {
+                open_image_window(&handle_for_image, &id_for_image, &target, "");
+            });
+            return NewWindowResponse::Deny;
+        }
         if matches!(url.scheme(), "http" | "https") {
             if let Some(webview) =
                 app_for_new_window.get_webview(&profile_label(&id_for_new_window))
@@ -1696,13 +1950,17 @@ pub(crate) fn create_profile_webview(
         builder = builder.proxy_url(url);
     }
 
-    parent
+    let webview = parent
         .add_child(
             builder,
             LogicalPosition::new(bounds.x, bounds.y),
             LogicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
         )
         .map_err(|e| e.to_string())?;
+
+    // 必须在创建后立刻关掉浏览器加速键，否则 Ctrl+T/W/L、F5 等被 WebView2
+    // 吞掉，页面 JS 收不到，站点内的快捷键转发整条链路失效。
+    disable_browser_accelerator_keys(&webview);
 
     Ok(())
 }

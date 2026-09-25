@@ -1,6 +1,6 @@
 [package]
 name = "tauri-multi-account-browser"
-version = "0.8.0"
+version = "0.12.0"
 description = "Tauri 2 multi-account browser shell"
 authors = ["OpenAI"]
 edition = "2021"
@@ -25,6 +25,14 @@ url = "2"
 base64 = "0.22"
 tauri-plugin-dialog = "2.7.3"
 csv = "1.4.0"
+
+# v27：关闭 WebView2 浏览器加速键（Ctrl+T/W/L、F5 等），让按键能到达页面 JS，
+# 再经 mbkey:// 假导航转发给宿主，快捷键才能在网页获得焦点时生效。
+# 版本必须与 tauri-runtime-wry 依赖的 webview2-com 一致（见 Cargo.lock），
+# 否则 COM 接口类型不统一。
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [features]
 # 生产构建必须开启。没有它，tauri::is_dev() 为 true，应用会去连 devUrl
