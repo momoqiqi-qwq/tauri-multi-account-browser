@@ -20,7 +20,8 @@
 .account-generator h2 { font-size: 22px; font-weight: 650; letter-spacing: .02em; color: var(--el-text-color-primary); line-height: 1.4; }
 .account-generator .ag-heading p { margin-top: 5px; font-size: 13px; color: var(--el-text-color-secondary); line-height: 1.6; }
 .account-generator .ag-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0 32px 24px; flex: none; }
-.account-generator .ag-steps button { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 10px 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 12px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font: inherit; text-align: left; cursor: pointer; }
+.account-generator .ag-steps button { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 10px 16px; border: 1px solid var(--el-border-color-lighter); border-radius: var(--control-radius-lg); background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font: inherit; text-align: left; cursor: pointer; transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease; }
+.account-generator .ag-steps button:not(.active):not(:disabled):hover { border-color: var(--el-color-primary-light-7); background: var(--el-fill-color-light); color: var(--el-text-color-primary); }
 .account-generator .ag-steps button.active { color: var(--el-color-primary); background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); font-weight: 600; }
 .account-generator .ag-steps button.complete { color: var(--el-text-color-primary); }
 .account-generator .ag-steps button:disabled { cursor: default; }

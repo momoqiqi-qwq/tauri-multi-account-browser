@@ -7,6 +7,15 @@
   --control-muted: var(--muted);
   --control-border: var(--border);
   --control-thumb: var(--surface);
+  /* v34 shape & focus tokens: sm = mini icon controls, md = standard buttons,
+     lg = card-sized controls, pill = capsules; one focus-ring recipe everywhere. */
+  --control-radius-sm: 8px;
+  --control-radius-md: 10px;
+  --control-radius-lg: 12px;
+  --control-radius-pill: 999px;
+  --control-focus-ring: 2px solid var(--control-muted);
+  --control-focus-offset: 2px;
+  --control-thumb-on: color-mix(in srgb, white 86%, var(--accent));
   --el-fill-color: var(--surface-3);
   --el-fill-color-dark: var(--border);
   --el-disabled-bg-color: var(--surface-2);
@@ -84,7 +93,7 @@
 .el-button:is(.el-button--danger, .el-button--success, .el-button--warning, .el-button--info) {
   --el-button-text-color: color-mix(in srgb, var(--control-tone) 35%, var(--control-text));
 }
-.el-button:not(.is-circle):not(.is-round) { border-radius: 8px; }
+.el-button:not(.is-circle):not(.is-round) { border-radius: var(--control-radius-md); }
 .el-button[class].is-disabled,
 .el-button[class].is-disabled:is(:hover, :focus, :active) {
   color: var(--el-button-disabled-text-color);
@@ -104,28 +113,57 @@
 .el-radio-button__inner { background: var(--control-bg); color: var(--control-text); }
 .el-radio-button__inner:hover { color: var(--control-text); background: var(--control-hover); }
 
-/* Switch tracks and moving thumbs no longer use the library's fixed white/gray. */
+/* Switch tracks and moving thumbs no longer use the library's fixed white/gray.
+   v34: the checked track carries a clear accent tint and the thumb goes light,
+   so the on-state reads instantly in every theme instead of a 16% wash. */
 .el-switch {
   --el-switch-off-color: var(--control-hover);
-  --el-switch-on-color: var(--control-selected);
+  --el-switch-on-color: color-mix(in srgb, var(--accent) 72%, var(--control-bg));
   --el-switch-border-color: var(--control-border);
 }
-.el-switch.is-checked .el-switch__core { border-color: var(--control-selected-border); }
+.el-switch.is-checked .el-switch__core { border-color: color-mix(in srgb, var(--accent) 55%, var(--control-border)); }
 .el-switch .el-switch__core .el-switch__action {
   background: var(--control-muted);
   color: var(--control-bg);
   box-shadow: none;
 }
 .el-switch.is-checked .el-switch__core .el-switch__action {
-  background: var(--accent);
+  background: var(--control-thumb-on);
   color: var(--control-bg);
 }
 .el-switch .el-switch__core .el-switch__inner .is-text { color: var(--control-text); }
 .el-switch:not(.is-disabled):hover .el-switch__core { border-color: var(--control-muted); }
 .el-switch:has(.el-switch__input:focus-visible) .el-switch__core {
-  outline: 2px solid var(--control-muted);
+  outline: var(--control-focus-ring);
   outline-offset: 3px;
 }
+
+/* Clickable filter chips (el-tag in sidebars / batch bar) get the button hover ramp. */
+.el-tag.tag-chip, .el-tag.quick-tag {
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.tag-chip:hover, .quick-tag:hover { background: var(--el-color-primary-light-8); border-color: var(--el-color-primary-light-7); }
+.tag-chip.el-tag--dark:hover { background: var(--el-color-primary-dark-2); border-color: var(--el-color-primary-dark-2); }
+
+/* Segmented controls (v34): quiet track + selected wash + hairline ring instead of
+   the library's solid primary block; matches radio-button and switch recipes. */
+.el-segmented {
+  --el-segmented-color: var(--control-muted);
+  --el-segmented-bg-color: var(--control-hover);
+  --el-segmented-item-selected-bg-color: var(--control-selected);
+  --el-segmented-item-selected-color: var(--control-text);
+  --el-segmented-item-hover-bg-color: color-mix(in srgb, var(--control-bg) 72%, transparent);
+  --el-segmented-item-hover-color: var(--control-text);
+  --el-segmented-item-active-bg-color: color-mix(in srgb, var(--control-bg) 46%, transparent);
+  border-radius: var(--control-radius-md);
+}
+.el-segmented__item { border-radius: calc(var(--control-radius-md) - 3px); }
+.el-segmented__item-selected {
+  border-radius: calc(var(--control-radius-md) - 3px);
+  box-shadow: 0 0 0 1px var(--control-selected-border);
+}
+.el-segmented__item.is-selected .el-segmented__item-label { color: var(--control-text); font-weight: 600; }
 
 /* Shared range style for Element Plus sliders, without changing their hit area. */
 .el-slider {
@@ -136,7 +174,7 @@
 }
 .el-slider__button { background: var(--control-thumb); box-shadow: none; }
 .el-slider__button-wrapper:focus-visible .el-slider__button {
-  outline: 2px solid var(--control-muted);
+  outline: var(--control-focus-ring);
   outline-offset: 3px;
 }
 .el-slider__runway.is-disabled .el-slider__button { background: var(--control-bg); }
@@ -192,6 +230,6 @@
 .new-profile { box-shadow: none; }
 .collapsed-toggle { background: var(--control-bg); border-color: var(--control-border); color: var(--control-text); }
 .collapsed-toggle:hover { background: var(--control-hover); }
-:where(button):focus-visible { outline: 2px solid var(--control-muted); outline-offset: 2px; }
+:where(button):focus-visible { outline: var(--control-focus-ring); outline-offset: var(--control-focus-offset); }
 .win-btn:focus-visible { outline-offset: -3px; }
 .win-btn.win-close:hover { background: var(--danger); color: #fff; }
