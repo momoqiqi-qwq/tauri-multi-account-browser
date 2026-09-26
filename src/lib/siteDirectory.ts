@@ -41,6 +41,9 @@ export function parseDirectorySite(raw: string, name = ''): DirectorySite {
     throw new Error('请使用不含用户名或密码的 http(s) 网站地址')
   }
   let host = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^www\./, '')
+  // Chromium 会把非法主机名里的空格转成 %20 而不是报错（Node 会直接抛错）。
+  // 显式拒绝这类主机名：两端判定一致，垃圾主页也不会变成一个新的「网站」。
+  if (!host || host.includes('%')) throw new Error('网址格式不正确')
   // Explicit alias only; never collapse arbitrary subdomains or multi-part public suffixes.
   if (host === 'chat.openai.com') host = 'chatgpt.com'
   const key = host + (url.port ? `:${url.port}` : '')
@@ -91,6 +94,26 @@ export function indexWebsiteGroups(groups: WebsiteGroup[]): Map<string, Director
     }
   }
   return index
+}
+
+export interface SiteFacet {
+  key: string
+  name: string
+  count: number
+}
+
+/**
+ * 网站维度筛选条用：按账号数统计每个网站，账号多的排前面，数量相同按名称排。
+ * 只统计传入条目里真实存在的网站，不会带出「已保存但当前没有账号」的网站。
+ */
+export function countSiteFacets(entries: Iterable<DirectoryEntry>): SiteFacet[] {
+  const facets = new Map<string, SiteFacet>()
+  for (const entry of entries) {
+    const existing = facets.get(entry.site.key)
+    if (existing) existing.count += 1
+    else facets.set(entry.site.key, { key: entry.site.key, name: entry.site.name, count: 1 })
+  }
+  return [...facets.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-Hans-CN'))
 }
 
 export function filterDirectoryEntries(entries: DirectoryEntry[], query: string): DirectoryEntry[] {

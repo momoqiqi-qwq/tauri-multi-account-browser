@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Check, Connection, MagicStick, Refresh, Search } from '@element-plus/icons-vue'
-import type { Profile } from '../types'
+import type { Profile, ProfileStatus } from '../types'
 import { useDialogSuppression } from '../lib/suppress'
 import { useAccountGenerator } from '../composables/useAccountGenerator'
 import '../account-generator.css'
 
 const visible = defineModel<boolean>({ required: true })
-const props = defineProps<{ profiles: Profile[]; globalDefaultUrl: string; initialUrl?: string }>()
+const props = defineProps<{ profiles: Profile[]; globalDefaultUrl: string; initialUrl?: string; statuses: Record<string, ProfileStatus> }>()
 const emit = defineEmits<{ created: [profiles: Profile[]]; refreshed: [profiles: Profile[]]; browse: [] }>()
 useDialogSuppression(() => visible.value)
 const {
-  step, urls, selectedIds, selected, sourceQuery, filteredSources, selectedSources,
+  step, urls, selectedIds, selected, sourceQuery, sources, filteredSources, selectedSources,
   missingIds, busy, busyLabel, error, needsRecheck, result, options, parsed, plan, canGenerate,
-  toggleSource, selectFiltered, clearSelection, nextStep, goStep, refreshSources, generate, close,
-} = useAccountGenerator(visible, () => props.profiles, () => props.initialUrl, () => props.globalDefaultUrl, created => emit('created', created), fresh => emit('refreshed', fresh))
+  allSelected, loginAccount,
+  toggleSource, selectAll, selectFiltered, clearSelection, nextStep, goStep, refreshSources, generate, close,
+} = useAccountGenerator(visible, () => props.profiles, () => props.initialUrl, () => props.globalDefaultUrl, () => props.statuses, created => emit('created', created), fresh => emit('refreshed', fresh))
 const advanced = ref<string[]>([])
 const steps = ['网站与命名', '选择来源账号', '确认并生成']
 const mainPanel = ref<HTMLElement | null>(null)
@@ -91,16 +92,16 @@ function advance() { previewPage.value = 1; nextStep() }
           <div v-else-if="step === 2" class="ag-step ag-step--list">
             <div class="ag-section-title"><h3>选择要沿用的账号配置</h3><p>继承代理、User-Agent、时区、语言与隔离设置，不复制账号会话。</p></div>
             <div class="ag-source-toolbar">
-              <el-input v-model="sourceQuery" :prefix-icon="Search" clearable placeholder="搜索账号、分组或标签" aria-label="搜索来源账号" :disabled="busy" />
+              <el-input v-model="sourceQuery" :prefix-icon="Search" clearable placeholder="搜索账号、分组、标签或登录邮箱" aria-label="搜索来源账号" :disabled="busy" />
               <el-button :icon="Refresh" :loading="busy" @click="refreshSources">刷新</el-button>
             </div>
-            <div class="ag-selection-bar"><span>已选 <strong>{{ selectedIds.length }}</strong> 个 · 当前显示 {{ filteredSources.length }} 个</span><div><el-button text :disabled="busy || !filteredSources.length" @click="selectFiltered">选中搜索结果</el-button><el-button text :disabled="busy || !selectedIds.length" @click="clearSelection">清空选择</el-button></div></div>
+            <div class="ag-selection-bar"><span>已选 <strong>{{ selectedIds.length }}</strong> 个 · 当前显示 {{ filteredSources.length }} 个</span><div><el-button text :disabled="busy || !sources.length || allSelected" @click="selectAll">全选</el-button><el-button v-if="sourceQuery.trim()" text :disabled="busy || !filteredSources.length" @click="selectFiltered">选中搜索结果</el-button><el-button text :disabled="busy || !selectedIds.length" @click="clearSelection">清空选择</el-button></div></div>
             <div v-if="missingIds.length" class="ag-notice ag-notice--error" role="alert">{{ missingIds.length }} 个来源账号已删除，请清空后重新选择。</div>
             <div class="ag-source-list">
               <el-checkbox v-for="profile in filteredSources" :key="profile.id" class="ag-source-row" :class="{ selected: selected.has(profile.id) }"
                 :model-value="selected.has(profile.id)" :disabled="busy" :aria-label="`选择来源：${profile.name}`" @change="(value: string | number | boolean) => toggleSource(profile.id, !!value)">
                 <span class="ag-source-avatar">{{ [...profile.name][0] || 'A' }}</span>
-                <span class="ag-source-copy"><strong>{{ profile.name }}</strong><small>{{ profile.group || '未分组' }}<span v-if="profile.timezone"> · {{ profile.timezone }}</span></small></span>
+                <span class="ag-source-copy"><strong>{{ profile.name }}</strong><small>{{ profile.group || '未分组' }}<span v-if="profile.timezone"> · {{ profile.timezone }}</span></small><small v-if="loginAccount(profile.id)" class="ag-source-login" :title="loginAccount(profile.id)">{{ loginAccount(profile.id) }}</small></span>
                 <span class="ag-source-badges"><span>{{ profile.proxy ? '沿用代理' : '直连' }}</span><span v-if="profile.incognito">临时</span></span>
               </el-checkbox>
               <div v-if="!filteredSources.length" class="ag-list-empty">{{ sourceQuery ? '没有匹配的账号，试试其他关键词。' : '还没有来源账号，请先新建一个账号并配置好参数。' }}</div>

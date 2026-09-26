@@ -6,6 +6,7 @@ import {
   CopyDocument,
   DataAnalysis,
   Download,
+  Grid,
   House,
   Link,
   Refresh,
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   forward: []
   reload: []
   home: []
+  directory: []
   copyUrl: []
   accountOverview: []
   downloads: []
@@ -40,6 +42,7 @@ const metadata: Record<BrowserToolbarBuiltinId, {
 }> = {
   reload: { label: '刷新当前页面', icon: Refresh, browserOnly: true },
   home: { label: '回到账号主页', icon: House, browserOnly: true },
+  directory: { label: '网站导航', icon: Grid, browserOnly: false },
   back: { label: '后退', icon: ArrowLeft, browserOnly: true },
   forward: { label: '前进', icon: ArrowRight, browserOnly: true },
   'copy-url': { label: '复制当前网址', icon: CopyDocument, browserOnly: true },
@@ -63,6 +66,7 @@ function runBuiltin(id: BrowserToolbarBuiltinId) {
     window.setTimeout(() => { reloadPulse.value = false }, 650)
     emit('reload')
   } else if (id === 'home') emit('home')
+  else if (id === 'directory') emit('directory')
   else if (id === 'back') emit('back')
   else if (id === 'forward') emit('forward')
   else if (id === 'copy-url') emit('copyUrl')

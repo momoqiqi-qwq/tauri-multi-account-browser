@@ -25,6 +25,17 @@
 3. `<script setup>` 只对**顶层** ref 解包 → 「对象取函数、顶层解构取 ref」：
    `const { openTabs, activeId } = tabs`，模板里 `@activate="tabs.activate"`。
 
+## 多会话工作区（2026-09-26 起）
+
+同一时刻可能有 2~3 条流程在改这份代码（实测 0.13.0 那一轮同时有：账号总览按网站分类、
+多账号生成器、快捷工具栏「网站导航」按钮）。
+
+- **版本号与 `CHANGES_V{n}.md` 是共享的**：动手前先 `git status`，看清哪些未提交改动不是自己的
+  —— 别把别人的改动当成自己的，也别重复 bump 版本号；改动并入当时那一轮的版本即可。
+- 临时目录 `.mut/`、`preview/` 是共用的：**只删自己建的文件**，`rm -rf` 整目录会删掉别人的工作文件。
+  `preview/` 被别人删掉时，自己起着的 vite 预览会**静默 fallback 到根 `index.html`**（页面能开、
+  组件全无）—— 预览入口放自己独占的路径更稳。
+
 ## 项目特有坑
 
 **1. `set_app_settings` 整体覆盖写盘**（不做字段合并）。任何保存入口必须传**完整**
@@ -75,10 +86,30 @@ localStorage 只存 UI 偏好；旧数据迁移要幂等（store 空时导一次
 **10. 工作区曾被 v14 zip 重新解压覆盖**（2026-09-11，当时无 git，多轮改动丢失）。
 改代码前先 `tar` 备份（排除 node_modules/target/dist）。现已 git init。
 
+**11. 这个工作区会同时开多个会话改同一份未提交代码**（2026-09-26 实测）。
+`git status` 里的改动未必是自己写的，版本号也可能已被别人 bump。动手前先 `git status`
++ `git diff --stat` 认领文件；`.mut/` 是**共享临时目录**（各会话的探针脚本、chrome profile
+都在里面）→ **绝不 `rm -rf .mut/`**，删之前先 `ls` 看归属。写 `CHANGES_V*.md`、bump 版本号、
+`git commit` 之前先确认这一轮编号有没有被别人占用。
+
+**12. UI 交互改动的验证方式**（2026-09-26 起）：能抽成纯函数的走 `scripts/test-*.mjs`
+（`ts.transpileModule` + `data:` URL 动态 import）；DOM/交互行为走「vite dev + 零依赖 CDP 探针」，
+两边的断言都要做变异校验。完整流程见 skill **`vite-component-cdp-probe`**，脚本留档在
+`.workbuddy-ai/probe/`。环境坑：vite 只监听 `[::1]`（curl 要用 `localhost`）、沙箱 curl 要
+加 `--noproxy '*'`。
+
+**13. 网站归类只有一处真值**（2026-09-26 起）：`src/lib/siteDirectory.ts` 的
+`buildWebsiteGroups` / `indexWebsiteGroups` / `countSiteFacets` —— 网站导航与「全部账号历史」的
+网站筛选都从它派生。**App.vue 必须把 `global_default_url` 传给总览弹窗**，否则 inherit 账号归类错。
+`parseDirectorySite` 显式拒绝含 `%` 的主机名：**Chromium 把 `https://not a url` 解析成
+`not%20a%20url` 而不报错（Node 抛 TypeError）**，不拦就会凭空多出一个「网站」。
+
 ## 环境
 - VS 18 Community，Rust 1.98.0，Node 24.14.0 / 22.22.2。备份放 `.workbuddy-ai/backup/`。
 - git 已有，`master` 含 v19~v24。**坑：带斜杠的分支名创建不了**（`git update-ref` 返回成功
   但 refs 子目录没建，随后 commit 会变成无父根提交）→ 分支名一律不带斜杠。
 - 提交用 `git commit -F "$(cygpath -w /tmp/msg.txt)"`（git for Windows 不认 `/tmp/xxx`）。
 - 沙箱批量删除保护会拦 `rm -rf dist` 和 vite 清 dist → 用
-  `mv dist .workbuddy-ai/backup/dist-stale-<ts>`。
+  `mv dist .workbuddy-ai/backup/dist-stale-<ts>`。**但整目录的 `mv` 也会被拦**
+  （单文件改名正常，小目录如 3 个文件的 dist 可以）→ chrome profile 这类大目录只能用
+  `dangerouslyDisableSandbox` 显式列路径删，或留着说明。

@@ -60,6 +60,8 @@
 .account-generator .ag-source-copy { flex: 1; min-width: 0; }
 .account-generator .ag-source-copy strong { display: block; overflow-wrap: anywhere; font-weight: 500; line-height: 1.5; color: var(--el-text-color-primary); }
 .account-generator .ag-source-copy small { display: block; margin-top: 4px; color: var(--el-text-color-secondary); overflow-wrap: anywhere; }
+/* 容器里识别到的登录账号（如 Google 邮箱）：账号列表里最关键的区分信息，用主题色点出来。 */
+.account-generator .ag-source-copy .ag-source-login { color: var(--el-color-primary); }
 .account-generator .ag-source-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; max-width: 95px; flex: none; }
 .account-generator .ag-source-badges span { padding: 3px 7px; border-radius: 5px; font-size: 11px; color: var(--el-text-color-secondary); background: var(--el-fill-color); }
 .account-generator .ag-muted { font-size: 12px; line-height: 1.7; color: var(--el-text-color-secondary); }

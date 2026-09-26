@@ -9,7 +9,7 @@ function compiled(path) {
 const data = text => 'data:text/javascript;base64,' + Buffer.from(text).toString('base64')
 const directory = data(compiled('../src/lib/siteDirectory.ts'))
 const source = compiled('../src/lib/accountGenerator.ts').replace(/from ['"]\.\/siteDirectory['"]/, `from '${directory}'`)
-const { parseGeneratorTargets: parse, planAccountGeneration: plan, generatorPlanSignature: signature } = await import(data(source))
+const { parseGeneratorTargets: parse, planAccountGeneration: plan, generatorPlanSignature: signature, restoreSourceSelection: restore, SOURCE_SELECTION_KEY: selectionKey } = await import(data(source))
 const options = { prefix: '', order: 'source-site', separator: ' · ', group: '', copyTags: true, skipExisting: true }
 const make = (id, name = id, extra = {}) => ({ id, name, note: '不复制备注', avatar: 'private-avatar', default_url: 'https://source.test/', url_mode: 'custom', last_url: 'https://login.test/', created_at: '2026-09-25', order: 1, incognito: false, proxy: 'socks5://127.0.0.1:1080', user_agent: 'Source UA', timezone: 'Asia/Shanghai', locale: 'zh-CN', fingerprint_guard: true, group: '工作', tags: ['项目'], favorite: true, last_used_at: '2026-09-25', ...extra })
 const a = make('a', 'Alice'), b = make('b', 'Bob', { incognito: true })
@@ -84,4 +84,17 @@ test('preflight signatures detect changed configs and new duplicates, but ignore
   const original = signature(build()); assert.notEqual(original, signature(build([{...a, proxy: ''}, b])))
   assert.equal(original, signature(build([{...a,last_url:'https://elsewhere.test/'},b])))
   assert.notEqual(original, signature(build([a,b,make('e','Alice · Claude',{default_url:'https://claude.ai/'})])))
+})
+test('remembered source selection keeps order, drops deleted accounts and survives corrupted storage', () => {
+  const ids = ['a', 'b', 'c']
+  assert.deepEqual(restore(JSON.stringify(['c', 'a']), ids), ['c', 'a'])
+  // 记忆里已删除的账号绝不能复活，否则下次打开会直接卡在「来源账号已删除」错误上
+  assert.deepEqual(restore(JSON.stringify(['a', 'gone', 'c']), ids), ['a', 'c'])
+  assert.deepEqual(restore(JSON.stringify(['a', 'a', 'b']), ids), ['a', 'b'])
+  assert.deepEqual(restore(JSON.stringify(['a', 7, null, {}, '']), ids), ['a'])
+  assert.deepEqual(restore(JSON.stringify(['a']), []), [])
+  for (const broken of [null, undefined, '', '{not json', JSON.stringify({ a: 1 }), JSON.stringify('a')]) {
+    assert.deepEqual(restore(broken, ids), [], String(broken))
+  }
+  assert.equal(selectionKey, 'mab-generator-source-selection-v1')
 })

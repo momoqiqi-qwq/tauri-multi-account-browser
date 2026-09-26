@@ -619,6 +619,7 @@ onBeforeUnmount(() => {
             @reload="browserAction('reload')"
             @home="goHome"
             @copy-url="copyCurrentUrl"
+            @directory="websiteDirectoryVisible = true"
             @account-overview="openAccountOverview"
             @downloads="downloadsVisible = true"
             @settings="appSettingsVisible = true"
@@ -654,6 +655,7 @@ onBeforeUnmount(() => {
       :history="downloadHistory"
       :active-id="activeId"
       :open-tabs="openTabs"
+      :global-default-url="dlSettings?.global_default_url || ''"
       @activate="tabs.activate"
       @refresh="accounts.refreshStatuses"
     />
@@ -680,6 +682,7 @@ onBeforeUnmount(() => {
       :profiles="profiles"
       :initial-url="generatorInitialUrl"
       :global-default-url="dlSettings?.global_default_url || 'https://chat01.ai/'"
+      :statuses="statuses"
       @created="acceptGeneratedProfiles"
       @refreshed="profiles = $event"
       @browse="browseGeneratedProfiles"

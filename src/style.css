@@ -554,6 +554,36 @@ button, input { font: inherit; }
   box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
+/* v35: 账号总览的网站维度。分类条与网站条共用 chip 样式，网站条多一个前置标签。 */
+.overview-sites {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 0 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.overview-sites::-webkit-scrollbar { display: none; }
+.overview-sites__label { flex: 0 0 auto; padding-right: 2px; font-size: 11px; color: var(--muted); }
+.overview-category__count { margin-left: 6px; font-size: 10px; font-variant-numeric: tabular-nums; opacity: .68; }
+.overview-category.active .overview-category__count { opacity: .88; }
+.overview-account-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.overview-account-title strong { min-width: 0; }
+.overview-site-chip {
+  flex: 0 0 auto;
+  max-width: 132px;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* v10: 宿主侧快捷工具栏。工具栏与账号子 WebView 是兄弟区域，永远不会被远程网页覆盖。 */
 .browser-workspace {
   flex: 1;

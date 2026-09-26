@@ -2,6 +2,8 @@ import type { Profile } from '../types'
 import { parseDirectorySite } from './siteDirectory'
 
 export const MAX_GENERATED_PROFILES = 200
+/** 记住「上次选择的来源账号」所用的 localStorage 键。 */
+export const SOURCE_SELECTION_KEY = 'mab-generator-source-selection-v1'
 export interface GeneratorTarget { name: string; url: string; line: number }
 export interface TargetParseResult { targets: GeneratorTarget[]; errors: string[]; duplicates: number }
 export interface GeneratorOptions {
@@ -130,4 +132,26 @@ export function planAccountGeneration(
 /** Compare the actual intended write, including skips and config, before final submission. */
 export function generatorPlanSignature(plan: GeneratorPlan): string {
   return JSON.stringify({ errors: plan.errors, rows: plan.rows.map(row => ({ sourceId: row.sourceId, skipped: row.skipped, draft: row.draft })) })
+}
+
+/**
+ * 还原上一次记住的来源账号选择。
+ *
+ * 记忆是跨会话的，而账号随时可能被删除：这里必须只保留 `knownIds` 里仍存在的
+ * id，否则下一次打开生成器会凭空带出一批「已删除」的选择，直接卡在错误状态上。
+ * 存储内容被外部改坏（非数组 / 非字符串元素 / 重复项）时一律静默降级，
+ * 不让脏数据阻塞生成器本身。
+ */
+export function restoreSourceSelection(raw: string | null | undefined, knownIds: Iterable<string>): string[] {
+  const known = new Set(knownIds)
+  let parsed: unknown
+  try { parsed = JSON.parse(raw ?? '') } catch { return [] }
+  if (!Array.isArray(parsed)) return []
+  const seen = new Set<string>(), result: string[] = []
+  for (const id of parsed) {
+    if (typeof id !== 'string' || seen.has(id) || !known.has(id)) continue
+    seen.add(id)
+    result.push(id)
+  }
+  return result
 }

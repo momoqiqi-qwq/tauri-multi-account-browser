@@ -5,3 +5,9 @@ src-tauri/target/
 
 # 本地备份包不入版本库
 .workbuddy-ai/backup/
+
+# 并行会话共用的临时探针目录（含无头 Chrome profile，体积上百 MB）
+.mut/
+
+# 探针夹具与截图：main.ts 里抄了真实账号名与登录邮箱，不入公开仓库
+.workbuddy-ai/probe/

@@ -6,7 +6,7 @@ import ts from 'typescript'
 // Test pure grouping logic with the existing TypeScript dependency; no test runtime added.
 const source = await readFile(new URL('../src/lib/siteDirectory.ts', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } })
-const { ALL_SITES, UNKNOWN_SITE, parseDirectorySite, siteForProfile, buildWebsiteGroups, searchDirectoryProfiles, readDirectoryPreferences } =
+const { ALL_SITES, UNKNOWN_SITE, parseDirectorySite, siteForProfile, buildWebsiteGroups, indexWebsiteGroups, countSiteFacets, searchDirectoryProfiles, readDirectoryPreferences } =
   await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 const profile = (id, url, extra = {}) => ({ id, name: id, default_url: url, url_mode: 'custom', last_url: 'https://login.example.org/', order: 0, tags: [], group: '', note: '', ...extra })
 
@@ -60,4 +60,34 @@ test('recovers corrupt local preferences and validates saved website records', (
   assert.equal(parsed.sites.length, 1)
   assert.equal(parsed.sites[0].name, 'B')
   assert.equal(readDirectoryPreferences('{"columns":1}').columns, 1)
+})
+
+// v35: 账号总览的网站筛选条依赖这份计数。
+test('counts accounts per website, most accounts first, and drops saved websites without accounts', () => {
+  const profiles = [
+    profile('a', 'https://chat01.ai'),
+    profile('b', 'https://chat01.ai/chat'),
+    profile('e', 'https://chat01.ai/chat/1'),
+    profile('c', 'https://claude.ai'),
+    profile('f', 'https://www.claude.ai'),
+    profile('d', 'not a url'),
+  ]
+  // 保存名 '我的画图站' 按名称排序会落到 'Claude' 之后；只有按账号数排才会排第一。
+  const saved = [parseDirectorySite('https://chat01.ai', '我的画图站'), parseDirectorySite('https://github.com')]
+  const entries = [...indexWebsiteGroups(buildWebsiteGroups(profiles, 'https://chat01.ai', saved)).values()]
+  const facets = countSiteFacets(entries)
+  assert.deepEqual(facets, [
+    { key: 'chat01.ai', name: '我的画图站', count: 3 },
+    { key: 'claude.ai', name: 'Claude', count: 2 },
+    { key: UNKNOWN_SITE, name: '待设置网站', count: 1 },
+  ])
+  assert.equal(facets.some(facet => facet.key === 'github.com'), false)
+  assert.equal(facets.reduce((sum, facet) => sum + facet.count, 0), profiles.length)
+})
+test('website facets reuse the saved name, fall back to the built-in name and never touch account data', () => {
+  const only = profile('a', 'https://chat01.ai'), snapshot = JSON.stringify(only)
+  const entries = saved => [...indexWebsiteGroups(buildWebsiteGroups([only], '', saved)).values()]
+  assert.deepEqual(countSiteFacets(entries([])), [{ key: 'chat01.ai', name: 'Chat01', count: 1 }])
+  assert.deepEqual(countSiteFacets(entries([parseDirectorySite('https://chat01.ai', '我的网站')])), [{ key: 'chat01.ai', name: '我的网站', count: 1 }])
+  assert.equal(JSON.stringify(only), snapshot)
 })

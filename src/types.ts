@@ -149,6 +149,7 @@ export type ThemeId =
 export type BrowserToolbarBuiltinId =
   | 'reload'
   | 'home'
+  | 'directory'
   | 'back'
   | 'forward'
   | 'copy-url'

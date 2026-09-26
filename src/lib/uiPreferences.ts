@@ -35,6 +35,7 @@ export const BROWSER_TOOLBAR_BUILTINS: Array<{
 }> = [
   { id: 'reload', label: '刷新', description: '刷新当前账号页面，并遵守“刷新后恢复当前位置”设置', defaultEnabled: true },
   { id: 'home', label: '主页', description: '回到当前账号配置的默认打开网址', defaultEnabled: true },
+  { id: 'directory', label: '网站导航', description: '返回按网站分组的账号选择页', defaultEnabled: true },
   { id: 'back', label: '后退', description: '当前账号浏览历史后退', defaultEnabled: false },
   { id: 'forward', label: '前进', description: '当前账号浏览历史前进', defaultEnabled: false },
   { id: 'copy-url', label: '复制网址', description: '复制当前账号正在浏览的网址', defaultEnabled: true },
@@ -44,6 +45,20 @@ export const BROWSER_TOOLBAR_BUILTINS: Array<{
 ]
 
 const BUILTIN_IDS = new Set<BrowserToolbarBuiltinId>(BROWSER_TOOLBAR_BUILTINS.map((item) => item.id))
+
+/**
+ * 新内置项插入到「默认顺序中它前一个已存在项」之后。
+ * 老用户 localStorage 里只有旧列表，若直接追加到末尾，新增按钮会跑到工具栏最下方；
+ * 按锚点插入才能让它出现在预期的相对位置（如「网站导航」紧跟在「主页」之后）。
+ */
+function insertIndexFor(items: BrowserToolbarItem[], id: BrowserToolbarBuiltinId): number {
+  const order = BROWSER_TOOLBAR_BUILTINS.map((item) => item.id)
+  for (const previous of order.slice(0, order.indexOf(id)).reverse()) {
+    const index = items.findIndex((item) => item.id === previous)
+    if (index >= 0) return index + 1
+  }
+  return 0
+}
 
 function normalizeToolbarItems(value: BrowserToolbarItem[] | undefined): BrowserToolbarItem[] {
   const result: BrowserToolbarItem[] = []
@@ -56,7 +71,8 @@ function normalizeToolbarItems(value: BrowserToolbarItem[] | undefined): Browser
     }
   }
   for (const item of BROWSER_TOOLBAR_BUILTINS) {
-    if (!seen.has(item.id)) result.push({ id: item.id, enabled: item.defaultEnabled })
+    if (seen.has(item.id)) continue
+    result.splice(insertIndexFor(result, item.id), 0, { id: item.id, enabled: item.defaultEnabled })
   }
   return result
 }

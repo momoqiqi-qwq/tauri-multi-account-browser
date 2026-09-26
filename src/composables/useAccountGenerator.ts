@@ -1,14 +1,24 @@
 import { computed, reactive, ref, watch, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { Profile } from '../types'
+import type { Profile, ProfileStatus } from '../types'
 import {
   parseGeneratorTargets, planAccountGeneration, generatorPlanSignature,
+  restoreSourceSelection, SOURCE_SELECTION_KEY,
   type GeneratorOptions,
 } from '../lib/accountGenerator'
 
+/** 记住本次选择；localStorage 不可用（隐私模式等）时静默跳过，不影响生成器本身。 */
+function rememberSourceSelection(ids: string[]) {
+  try { window.localStorage.setItem(SOURCE_SELECTION_KEY, JSON.stringify(ids)) } catch { /* 忽略 */ }
+}
+function recallSourceSelection(): string | null {
+  try { return window.localStorage.getItem(SOURCE_SELECTION_KEY) } catch { return null }
+}
+
 export function useAccountGenerator(
   visible: Ref<boolean>, profiles: () => Profile[], initialUrl: () => string | undefined,
-  globalUrl: () => string, onCreated: (profiles: Profile[]) => void, onRefreshed: (profiles: Profile[]) => void,
+  globalUrl: () => string, statuses: () => Record<string, ProfileStatus>,
+  onCreated: (profiles: Profile[]) => void, onRefreshed: (profiles: Profile[]) => void,
 ) {
   const step = ref(1)
   const urls = ref('')
@@ -26,9 +36,20 @@ export function useAccountGenerator(
   const selected = computed(() => new Set(selectedIds.value))
   const sourceIndex = computed(() => new Map(sources.value.map(profile => [profile.id, profile])))
   const missingIds = computed(() => selectedIds.value.filter(id => !sourceIndex.value.has(id)))
+  const allSelected = computed(() => sources.value.length > 0 && sources.value.every(profile => selected.value.has(profile.id)))
+
+  /**
+   * 该来源账号在容器里最近识别到的登录账号（优先邮箱，如 Google 账号）。
+   * 状态是页面被动上报的，从没打开过的账号会返回空串。
+   */
+  function loginAccount(id: string): string {
+    const status = statuses()[id]
+    return (status?.email || status?.account || '').trim()
+  }
+
   const filteredSources = computed(() => {
     const q = sourceQuery.value.trim().toLocaleLowerCase()
-    return sources.value.filter(profile => !q || [profile.name, profile.group, profile.default_url, ...(profile.tags ?? [])]
+    return sources.value.filter(profile => !q || [profile.name, profile.group, profile.default_url, loginAccount(profile.id), ...(profile.tags ?? [])]
       .some(value => value.toLocaleLowerCase().includes(q)))
   })
   const selectedSources = computed(() => selectedIds.value.map(id => sourceIndex.value.get(id)).filter((p): p is Profile => !!p))
@@ -41,9 +62,12 @@ export function useAccountGenerator(
     error.value = ''
     result.value = null
     sourceQuery.value = ''
+    // 沿用上次的选择，但只保留仍然存在的账号：记忆里被删掉的 id 绝不能复活。
+    selectedIds.value = restoreSourceSelection(recallSourceSelection(), sources.value.map(profile => profile.id))
     if (initialUrl()) urls.value = initialUrl()!
   })
   watch([urls, selectedIds, options], () => { if (!needsRecheck.value) error.value = '' }, { deep: true })
+  watch(selectedIds, ids => { rememberSourceSelection(ids) })
   watch(profiles, next => { if (visible.value && !busy.value) sources.value = next })
 
   function toggleSource(id: string, checked: boolean) {
@@ -51,6 +75,11 @@ export function useAccountGenerator(
     const next = new Set(selectedIds.value)
     if (checked) next.add(id); else next.delete(id)
     selectedIds.value = [...next]
+  }
+  /** 一键全选：选中全部来源账号，不受当前搜索过滤影响。 */
+  function selectAll() {
+    if (busy.value) return
+    selectedIds.value = sources.value.map(profile => profile.id)
   }
   function selectFiltered() {
     if (busy.value) return
@@ -119,6 +148,7 @@ export function useAccountGenerator(
   return {
     step, urls, selectedIds, selected, sourceQuery, sources, filteredSources, selectedSources,
     missingIds, busy, busyLabel, error, needsRecheck, result, options, parsed, plan, canGenerate,
-    toggleSource, selectFiltered, clearSelection, nextStep, goStep, refreshSources, generate, close,
+    allSelected, loginAccount,
+    toggleSource, selectAll, selectFiltered, clearSelection, nextStep, goStep, refreshSources, generate, close,
   }
 }
