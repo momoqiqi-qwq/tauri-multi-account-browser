@@ -8,7 +8,7 @@
 
 </div>
 
-<details>
+<details open>
 <summary><b>目录</b></summary>
 
 - [v0.2.0 / 优化版新增](#v020-优化版新增)
@@ -26,6 +26,8 @@
 - [版本历史（摘要）](#版本历史摘要)
 
 </details>
+
+---
 
 ---
 
