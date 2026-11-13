@@ -1,3 +1,34 @@
+<div align="center">
+
+<img src="./assets/readme-hero.svg" alt="tauri-multi-account-browser" width="1000" />
+
+**tauri-multi-account-browser**
+
+[![stars](https://img.shields.io/github/stars/momoqiqi-qwq/tauri-multi-account-browser?style=for-the-badge&color=f5c518&labelColor=2b2b2b)](https://github.com/momoqiqi-qwq/tauri-multi-account-browser/stargazers) ![Rust](https://img.shields.io/badge/Rust-CE6A2B?style=for-the-badge&logo=rust&logoColor=white) ![Tauri 2](https://img.shields.io/badge/Tauri%202-24C8DB?style=for-the-badge&logo=tauri&logoColor=white)
+
+</div>
+
+<details>
+<summary><b>目录</b></summary>
+
+- [v0.2.0 / 优化版新增](#v020-优化版新增)
+- [1. 技术结论先说清楚](#1-技术结论先说清楚)
+- [2. 整体架构](#2-整体架构)
+- [3. 项目目录](#3-项目目录)
+- [4. 运行](#4-运行)
+- [5. 核心隔离代码](#5-核心隔离代码)
+- [6. 每个标签页一个账号：隔离与防关联](#6-每个标签页一个账号隔离与防关联)
+- [7. Google OAuth：必须按真实限制设计](#7-google-oauth必须按真实限制设计)
+- [8. chat01.ai 隔离验收用例](#8-chat01ai-隔离验收用例)
+- [9. 已包含](#9-已包含)
+- [10. 已知限制 / 二期建议](#10-已知限制-二期建议)
+- [11. 为什么选 Vue 3 + Element Plus](#11-为什么选-vue-3-element-plus)
+- [版本历史（摘要）](#版本历史摘要)
+
+</details>
+
+---
+
 # Tauri 2 多账户浏览器容器 MVP
 
 > 当前源码版本：**0.7.0 / v23**。
